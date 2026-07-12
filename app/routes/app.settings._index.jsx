@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
 import { CreditCounter } from "../components/CreditCounter";
+import { SettingsNav } from "../components/SettingsNav";
 import { renderTemplate } from "../lib/sms-credits";
 import { AUTOMATIONS, SAMPLE_VALUES, settings } from "../mock/settings";
 
@@ -130,6 +131,10 @@ export default function Settings() {
       <s-button slot="primary-action" variant="primary">
         Save
       </s-button>
+
+      <s-section>
+        <SettingsNav current="/app/settings" />
+      </s-section>
 
       <s-banner tone="info" heading="Preview mode">
         <s-paragraph>
