@@ -1,7 +1,8 @@
 import { useCallback, useState } from "react";
 import { useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
-import { renderTemplate, segmentSms } from "../lib/sms-credits";
+import { CreditCounter } from "../components/CreditCounter";
+import { renderTemplate } from "../lib/sms-credits";
 import { AUTOMATIONS, SAMPLE_VALUES, settings } from "../mock/settings";
 
 export const loader = async ({ request }) => {
@@ -16,29 +17,6 @@ const HOURS = Array.from({ length: 24 }, (_, hour) => {
   const display = hour % 12 === 0 ? 12 : hour % 12;
   return { value: String(hour), label: `${display}:00 ${suffix}` };
 });
-
-function CreditCounter({ text }) {
-  const { encoding, isUnicode, characters, parts, credits, unitsPerPart, remaining } =
-    segmentSms(text);
-
-  return (
-    <s-stack direction="inline" gap="small" alignItems="center">
-      <s-badge tone={isUnicode ? "caution" : "neutral"}>{encoding}</s-badge>
-      <s-text color="subdued">
-        {characters} characters · {parts} SMS {parts === 1 ? "part" : "parts"} ·{" "}
-        <s-text type="strong">
-          {credits} {credits === 1 ? "credit" : "credits"}
-        </s-text>{" "}
-        per send · {remaining} left in this part
-      </s-text>
-      {isUnicode ? (
-        <s-text color="subdued">
-          (Bangla uses Unicode — only {unitsPerPart} characters per part)
-        </s-text>
-      ) : null}
-    </s-stack>
-  );
-}
 
 function AutomationCard({ automation, config, onToggle, onTemplateChange, onTest }) {
   const preview = renderTemplate(config.template, SAMPLE_VALUES);
