@@ -18,9 +18,10 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>BD SMS</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          Automated order SMS, COD verification and SMS campaigns for
+          Bangladeshi Shopify stores.
         </p>
         {showForm && (
           <Form className={styles.form} method="post" action="/auth/login">
@@ -36,16 +37,16 @@ export default function App() {
         )}
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Order automation</strong>. Send SMS automatically on new
+            order, fulfillment, shipment and delivery.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>COD verification</strong>. Confirm cash-on-delivery orders
+            by SMS before you ship them.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Campaigns &amp; cart recovery</strong>. Reach your customers
+            and win back abandoned checkouts.
           </li>
         </ul>
       </div>

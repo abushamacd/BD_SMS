@@ -14,7 +14,8 @@ Shopify SMS marketing & automation app for Bangladesh.
 2. Strip the template demo: delete `app.additional.jsx`, the product-generator code in `app._index.jsx`, and the demo metafield/metaobject blocks in `shopify.app.toml`.
 3. Set real access scopes: `read_orders`, `write_orders` (COD order tagging), `read_fulfillments`, `read_customers`, `read_checkouts`, `read_products`.
 4. `.env` for gateway keys + encryption secret.
-5. **Parallel admin task:** apply for **Protected Customer Data** access (Level 2) in the Partner Dashboard — required to read customer phone numbers in production. Start this now; approval takes time.
+5. **Parallel admin task:** apply for **Protected Customer Data** access (Level 2) in the Partner Dashboard — required to read customer phone numbers in production. Approval comes *after* review, so submit early and keep building.
+   → Step-by-step guide with copy-paste justifications: [`docs/protected-customer-data.md`](docs/protected-customer-data.md)
 
 ---
 
