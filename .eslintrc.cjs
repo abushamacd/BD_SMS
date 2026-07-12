@@ -50,6 +50,9 @@ module.exports = {
       },
       rules: {
         "react/no-unknown-property": ["error", { ignore: ["variant"] }],
+        // PropTypes is deprecated in React and this app has no runtime need for
+        // it — the Polaris web components validate their own props.
+        "react/prop-types": "off",
       },
     },
 
