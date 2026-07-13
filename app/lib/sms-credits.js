@@ -103,3 +103,106 @@ export function renderTemplate(template = "", values = {}) {
     Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Accidental Unicode
+// ---------------------------------------------------------------------------
+//
+// The expensive mistake in an English SMS is invisible. Word, Google Docs and
+// macOS silently turn ' into ’ and -- into —, and neither is in the GSM-7
+// alphabet. One of them anywhere in the message drops capacity from 160
+// characters to 70, so a 150-character English template that cost 1 credit now
+// costs 3 — for every recipient, on every send, forever, and nothing on screen
+// looks wrong.
+//
+// Bangla is *meant* to be Unicode and there is nothing to fix. This is only for
+// messages that are otherwise plain English.
+
+// Typographic characters and their GSM-7-safe equivalents.
+const GSM7_SUBSTITUTIONS = {
+  "’": "'", "‘": "'", "‚": "'", "‛": "'",
+  "“": '"', "”": '"', "„": '"', "‟": '"',
+  "–": "-", "—": "-", "−": "-", "‒": "-",
+  "…": "...",
+  " ": " ", // non-breaking space
+  " ": " ", " ": " ", " ": " ", " ": " ",
+  "•": "*",
+  "·": ".",
+  "×": "x",
+  "‐": "-", "‑": "-",
+  "″": '"', "′": "'",
+  "​": "", // zero-width space — invisible, and it costs you 70 chars of capacity
+  "‌": "", "‍": "", "﻿": "",
+};
+
+/**
+ * Characters in `text` that are not GSM-7 and therefore force the whole message
+ * into Unicode. Returns [] for Bangla — Bangla has no GSM-7 form, so listing
+ * every Bangla character as a "problem" would be noise.
+ */
+export function findUnicodeForcingCharacters(text = "") {
+  // Any Bangla at all means the message is legitimately Unicode.
+  if (/[ঀ-৿]/.test(text)) return [];
+
+  const found = new Map();
+
+  for (const char of text) {
+    if (GSM7_BASIC.has(char) || GSM7_EXTENDED.has(char)) continue;
+
+    const entry = found.get(char) ?? {
+      char,
+      count: 0,
+      replacement: GSM7_SUBSTITUTIONS[char] ?? null,
+    };
+    entry.count += 1;
+    found.set(char, entry);
+  }
+
+  return [...found.values()];
+}
+
+/**
+ * Rewrite typographic characters to their GSM-7 equivalents, so an English
+ * message costs what the merchant expects. Returns the original text unchanged
+ * if it is Bangla, or if nothing is substitutable.
+ *
+ * @returns {{text: string, changed: boolean, before: object, after: object}}
+ */
+export function fixAccidentalUnicode(text = "") {
+  const before = segmentSms(text);
+
+  if (!before.isUnicode || /[ঀ-৿]/.test(text)) {
+    return { text, changed: false, before, after: before };
+  }
+
+  const fixed = [...text]
+    .map((char) =>
+      Object.prototype.hasOwnProperty.call(GSM7_SUBSTITUTIONS, char)
+        ? GSM7_SUBSTITUTIONS[char]
+        : char,
+    )
+    .join("");
+
+  const after = segmentSms(fixed);
+
+  return { text: fixed, changed: fixed !== text, before, after };
+}
+
+// Gateways refuse to concatenate beyond a point, and a message this long is
+// almost always a mistake (an unrendered variable, a pasted URL).
+export const MAX_PARTS = 10;
+
+/**
+ * What a send will actually cost. The one function the send pipeline and the UI
+ * both call, so the quoted price and the charged price cannot diverge.
+ */
+export function estimateCost(text, recipients = 1) {
+  const segment = segmentSms(text);
+
+  return {
+    ...segment,
+    recipients,
+    totalCredits: segment.credits * recipients,
+    exceedsMaxParts: segment.parts > MAX_PARTS,
+  };
+}

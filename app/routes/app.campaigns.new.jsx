@@ -199,7 +199,11 @@ export default function NewCampaign() {
             value={message}
             onInput={(event) => setMessage(event.target.value)}
           />
-          <CreditCounter text={message} recipients={audience.length} />
+          <CreditCounter
+            text={message}
+            recipients={audience.length}
+            onFix={setMessage}
+          />
         </s-stack>
       </s-section>
 

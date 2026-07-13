@@ -311,7 +311,11 @@ export default function SendSms() {
             onInput={(event) => setMessage(event.target.value)}
           />
 
-          <CreditCounter text={message} recipients={recipientCount} />
+          <CreditCounter
+            text={message}
+            recipients={recipientCount}
+            onFix={setMessage}
+          />
         </s-stack>
       </s-section>
 

@@ -3,7 +3,7 @@ import { useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
 import { CreditCounter } from "../components/CreditCounter";
 import { SettingsNav } from "../components/SettingsNav";
-import { renderTemplate } from "../lib/sms-credits";
+import { fixAccidentalUnicode, renderTemplate } from "../lib/sms-credits";
 import { AUTOMATIONS, SAMPLE_VALUES, settings } from "../mock/settings";
 
 export const loader = async ({ request }) => {
@@ -74,7 +74,18 @@ function AutomationCard({ automation, config, onToggle, onTemplateChange, onTest
               </s-stack>
             </s-box>
 
-            <CreditCounter text={preview} />
+            {/* The counter measures the rendered preview, but the fix must be
+                written back to the template — so repair the template, not the
+                preview, which has nowhere to be saved. */}
+            <CreditCounter
+              text={preview}
+              onFix={() =>
+                onTemplateChange(
+                  automation.key,
+                  fixAccidentalUnicode(config.template).text,
+                )
+              }
+            />
 
             <s-stack direction="inline" gap="small">
               <s-button

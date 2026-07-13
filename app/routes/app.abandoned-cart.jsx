@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
 import { CreditCounter } from "../components/CreditCounter";
-import { renderTemplate } from "../lib/sms-credits";
+import { fixAccidentalUnicode, renderTemplate } from "../lib/sms-credits";
 import {
   DELAY_OPTIONS,
   SAMPLE_VALUES,
@@ -145,7 +145,12 @@ function FollowUpCard({ followUp, index, discount, onChange }) {
               </s-stack>
             </s-box>
 
-            <CreditCounter text={preview} />
+            <CreditCounter
+              text={preview}
+              onFix={() =>
+                update({ template: fixAccidentalUnicode(followUp.template).text })
+              }
+            />
           </s-stack>
         ) : null}
       </s-stack>
