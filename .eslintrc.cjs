@@ -25,6 +25,13 @@ module.exports = {
   extends: ["eslint:recommended"],
 
   overrides: [
+    // Server-only code: the worker process and anything *.server.js. These run
+    // in Node, not the browser, so process/console/Buffer are legitimate.
+    {
+      files: ["worker.js", "**/*.server.{js,jsx}", "prisma/**/*.js"],
+      env: { node: true, browser: false },
+    },
+
     // React
     {
       files: ["**/*.{js,jsx,ts,tsx}"],
