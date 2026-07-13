@@ -18,22 +18,36 @@ const OPERATORS = {
   19: "Banglalink",
 };
 
+// Machine-readable failure reasons. The send pipeline stores these on skipped
+// messages, so "why did this customer never get their SMS" is answerable
+// without parsing English.
+export const PhoneError = {
+  EMPTY: "EMPTY",
+  NO_DIGITS: "NO_DIGITS",
+  NOT_BANGLADESHI: "NOT_BANGLADESHI",
+  TOO_SHORT: "TOO_SHORT",
+  TOO_LONG: "TOO_LONG",
+  NOT_MOBILE: "NOT_MOBILE",
+  UNKNOWN_OPERATOR: "UNKNOWN_OPERATOR",
+};
+
 /**
  * @returns {{valid: boolean, e164: string|null, national: string|null,
- *   operator: string|null, input: string, reason: string|null}}
+ *   operator: string|null, input: string, code: string|null, reason: string|null}}
  */
 export function normalizeBdPhone(input) {
   const raw = String(input ?? "").trim();
-  const fail = (reason) => ({
+  const fail = (code, reason) => ({
     valid: false,
     e164: null,
     national: null,
     operator: null,
     input: raw,
+    code,
     reason,
   });
 
-  if (!raw) return fail("Empty");
+  if (!raw) return fail(PhoneError.EMPTY, "Empty");
 
   // Bengali numerals (০১২৩৪৫৬৭৮৯) arrive from Bangla spreadsheets and phone
   // contacts. Fold them to ASCII before anything else looks at the string.
@@ -44,26 +58,49 @@ export function normalizeBdPhone(input) {
   // Strip everything that isn't a digit: spaces, dashes, brackets, leading +.
   let digits = ascii.replace(/\D/g, "");
 
-  if (!digits) return fail("No digits");
+  if (!digits) return fail(PhoneError.NO_DIGITS, "No digits");
 
-  // Peel off the country code in any of the forms it arrives in.
-  if (digits.startsWith("880")) {
-    digits = digits.slice(3);
-  } else if (digits.startsWith("0")) {
-    digits = digits.slice(1);
-  }
+  // Peel the prefixes off, outermost first. They stack in real data — a CSV
+  // exported from a phone book quite happily contains "88001712345678", which
+  // is country code + the national leading zero, and "008801712345678", which
+  // adds the international dial prefix on top. Peeling only one layer (as a
+  // naive normalizer does) rejects both, and those are real customers who then
+  // silently never receive their order SMS.
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  if (digits.startsWith("880")) digits = digits.slice(3);
+  if (digits.startsWith("0")) digits = digits.slice(1);
+
   // What remains should be the 10-digit national number: 1[3-9] + 8 digits.
 
   if (digits.length !== 10) {
-    return fail(
-      digits.length < 10 ? "Too short — expected 11 digits" : "Too long — expected 11 digits",
-    );
+    // A wrong-length number that starts with another country's code is a foreign
+    // number, not a malformed BD one. Saying so is more useful than "too long".
+    const looksForeign = digits.length >= 10 && !digits.startsWith("1");
+
+    if (looksForeign) {
+      return fail(
+        PhoneError.NOT_BANGLADESHI,
+        "Not a Bangladeshi number — this app only sends to +880",
+      );
+    }
+
+    return digits.length < 10
+      ? fail(PhoneError.TOO_SHORT, "Too short — a Bangladeshi mobile number has 11 digits")
+      : fail(PhoneError.TOO_LONG, "Too long — a Bangladeshi mobile number has 11 digits");
   }
 
-  if (!digits.startsWith("1")) return fail("Not a mobile number");
+  if (!digits.startsWith("1")) {
+    return fail(PhoneError.NOT_MOBILE, "Not a mobile number — SMS needs 01XXXXXXXXX");
+  }
 
   const operator = OPERATORS[digits.slice(0, 2)];
-  if (!operator) return fail(`Unknown operator prefix 0${digits.slice(0, 2)}`);
+
+  if (!operator) {
+    return fail(
+      PhoneError.UNKNOWN_OPERATOR,
+      `0${digits.slice(0, 2)} is not a Bangladeshi mobile prefix`,
+    );
+  }
 
   return {
     valid: true,
@@ -71,8 +108,18 @@ export function normalizeBdPhone(input) {
     national: `0${digits}`,
     operator,
     input: raw,
+    code: null,
     reason: null,
   };
+}
+
+/** 8801712345678 → 01712-345678, for display in the UI and the SMS log. */
+export function formatBdPhone(input) {
+  const result = normalizeBdPhone(input);
+  if (!result.valid) return String(input ?? "");
+
+  const national = result.national; // 01712345678
+  return `${national.slice(0, 5)}-${national.slice(5)}`;
 }
 
 /**
