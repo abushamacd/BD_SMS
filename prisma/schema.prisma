@@ -1,5 +1,12 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// BD SMS — data model
+//
+// Every model is scoped by `shop` (the myshopify domain). There is no global
+// data: two merchants never see each other's rows, and uninstall deletes by
+// shop.
+//
+// Money vs credits: `credits` are SMS parts (see app/lib/sms-credits.js) and are
+// always integers. Cart and order values are Decimal — never Float, which
+// cannot represent currency exactly.
 
 generator client {
   provider = "prisma-client-js"
@@ -9,6 +16,10 @@ datasource db {
   provider = "mysql"
   url      = env("DATABASE_URL")
 }
+
+// ---------------------------------------------------------------------------
+// Shopify session (managed by @shopify/shopify-app-session-storage-prisma)
+// ---------------------------------------------------------------------------
 
 model Session {
   id            String    @id
@@ -26,8 +37,515 @@ model Session {
   locale        String?
   collaborator  Boolean?  @default(false)
   emailVerified Boolean?  @default(false)
+
   refreshToken        String?   @db.Text
   refreshTokenExpires DateTime?
 
   @@index([shop])
+}
+
+// ---------------------------------------------------------------------------
+// Settings and credits
+// ---------------------------------------------------------------------------
+
+enum GatewayMode {
+  DEFAULT // sends through our gateway; merchant buys credits from us
+  PERSONAL // merchant's own gateway; they pay a subscription instead
+}
+
+model ShopSettings {
+  id   String @id @default(cuid())
+  shop String @unique
+
+  // --- Credits -------------------------------------------------------------
+  // The authoritative balance. Debited with a conditional update
+  // (`WHERE creditBalance >= cost`) so two concurrent sends can never both
+  // succeed against the same last credit. CreditLedger is the audit trail, not
+  // the source of truth — recomputing a balance by summing millions of ledger
+  // rows on every send is not viable.
+  creditBalance Int @default(0)
+
+  lowBalanceThreshold Int     @default(500)
+  autoRechargeEnabled Boolean @default(false)
+  autoRechargePackage String?
+
+  // --- Sending -------------------------------------------------------------
+  senderId    String?
+  countryCode String  @default("+880")
+
+  // Held messages are sent when quiet hours end. OTP is always exempt: a
+  // customer waiting at checkout at 11pm cannot wait until 8am for their code.
+  quietHoursEnabled Boolean @default(false)
+  quietHoursStart   Int     @default(22)
+  quietHoursEnd     Int     @default(8)
+  timezone          String  @default("Asia/Dhaka")
+
+  // --- Abandoned cart ------------------------------------------------------
+  abandonedCartEnabled Boolean @default(false)
+  discountEnabled      Boolean @default(false)
+  discountCode         String?
+
+  // --- Opt-out -------------------------------------------------------------
+  // When false (the default), a blacklisted number still receives transactional
+  // messages: opting out of marketing does not mean a customer wants to lose the
+  // OTP confirming their own order. See app/routes/app.settings.blacklist.jsx.
+  blockTransactional Boolean @default(false)
+
+  // --- Billing -------------------------------------------------------------
+  gatewayMode         GatewayMode @default(DEFAULT)
+  subscriptionPlan    String?
+  subscriptionChargeId String?
+  subscriptionActive  Boolean     @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum CreditEntryType {
+  PURCHASE // merchant bought credits
+  SEND // spent on a message
+  REFUND // gateway rejected before delivery; credits returned
+  ADJUSTMENT // manual correction by us
+  BONUS // promotional grant
+}
+
+// Append-only. Rows are never updated or deleted — a ledger that can be edited
+// is not a ledger. `balanceAfter` snapshots the balance at the time of the entry
+// so history stays readable even after later corrections.
+model CreditLedger {
+  id   String @id @default(cuid())
+  shop String
+
+  type   CreditEntryType
+  // Positive for purchases and refunds, negative for sends.
+  amount Int
+  balanceAfter Int
+
+  description String? @db.Text
+
+  smsLogId   String?
+  campaignId String?
+  // Shopify AppPurchaseOneTime GID, for purchases.
+  chargeId   String?
+
+  createdAt DateTime @default(now())
+
+  @@index([shop, createdAt])
+  @@index([shop, type])
+}
+
+// ---------------------------------------------------------------------------
+// Gateway
+// ---------------------------------------------------------------------------
+
+enum GatewayProvider {
+  BULKSMSBD
+  MIMSMS
+  SSLWIRELESS
+  GENERIC
+}
+
+model Gateway {
+  id   String @id @default(cuid())
+  shop String @unique
+
+  provider GatewayProvider @default(BULKSMSBD)
+
+  // AES-256-GCM ciphertext of a JSON blob: { apiKey, username, ... }.
+  // Never a plaintext column, never returned to the browser, decrypted only in
+  // the send path. See app/lib/crypto.server.js.
+  credentials String? @db.Text
+
+  senderId String?
+
+  // GENERIC only.
+  urlTemplate String? @db.Text
+  httpMethod  String  @default("GET")
+
+  // Result of the last "Test connection", so the UI can show gateway health
+  // without re-calling the provider on every page load.
+  lastTestedAt DateTime?
+  lastTestOk   Boolean?
+  lastTestError String?  @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Templates
+// ---------------------------------------------------------------------------
+
+enum AutomationKey {
+  NEW_ORDER
+  FULFILLMENT
+  SHIPMENT
+  DELIVERY
+  CANCELLED
+  COD_OTP
+  ABANDONED_CART_1
+  ABANDONED_CART_2
+  ABANDONED_CART_3
+}
+
+model MessageTemplate {
+  id   String @id @default(cuid())
+  shop String
+
+  key     AutomationKey
+  enabled Boolean       @default(false)
+  body    String        @db.Text
+
+  // Abandoned-cart follow-ups only.
+  delayHours      Int?
+  includeDiscount Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([shop, key])
+}
+
+// ---------------------------------------------------------------------------
+// SMS log
+// ---------------------------------------------------------------------------
+
+enum SmsType {
+  NEW_ORDER
+  FULFILLMENT
+  SHIPMENT
+  DELIVERY
+  CANCELLED
+  COD_OTP
+  ABANDONED_CART
+  CAMPAIGN
+  MANUAL
+  TEST
+}
+
+enum SmsStatus {
+  QUEUED
+  SENT // accepted by the gateway
+  DELIVERED // confirmed by the DLR callback
+  FAILED
+  SKIPPED // blacklisted, no consent, or invalid number — never sent, never billed
+}
+
+model SmsLog {
+  id   String @id @default(cuid())
+  shop String
+
+  // Canonical 8801XXXXXXXXX. Normalised before insert, never as typed.
+  phone        String
+  customerName String?
+  customerId   String?
+
+  type   SmsType
+  status SmsStatus @default(QUEUED)
+
+  body     String @db.Text
+  encoding String // "GSM-7" | "Unicode"
+  parts    Int
+  credits  Int
+
+  provider GatewayProvider
+  senderId String?
+
+  // The gateway's own id for this message. Delivery reports arrive later
+  // carrying only this, so it is how a DLR finds its row.
+  providerMessageId String?
+  errorCode         String?
+  errorMessage      String? @db.Text
+
+  // Idempotency. "NEW_ORDER:gid://shopify/Order/123" — a redelivered webhook
+  // hits this unique index instead of sending a second SMS and double-billing.
+  // NULL for campaigns and manual sends, and MySQL permits many NULLs in a
+  // unique index.
+  dedupeKey String?
+
+  orderId    String?
+  campaignId String?
+
+  sentAt      DateTime?
+  deliveredAt DateTime?
+
+  // Set when the retention job scrubs the phone number. The row survives for
+  // reporting; the personal data does not.
+  anonymizedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@unique([shop, dedupeKey])
+  @@index([shop, createdAt])
+  @@index([shop, status])
+  @@index([shop, type])
+  @@index([shop, phone])
+  @@index([providerMessageId])
+  @@index([campaignId])
+}
+
+// ---------------------------------------------------------------------------
+// Job queue
+// ---------------------------------------------------------------------------
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  DONE
+  FAILED
+  CANCELLED
+}
+
+enum JobType {
+  SEND_SMS
+  SEND_CAMPAIGN // fans out into one SEND_SMS per recipient
+  ABANDONED_CART_FOLLOWUP
+  COD_OTP_EXPIRE
+  AUTO_RECHARGE
+  RETENTION_PURGE
+}
+
+// A DB-backed queue. A worker claims rows with a conditional UPDATE
+// (status=PENDING AND runAt <= now → RUNNING, stamping lockedBy/lockedAt), so
+// two workers cannot claim the same job. Jobs whose lock is older than the
+// timeout are reclaimed — a worker that dies mid-job must not strand it.
+model Job {
+  id   String @id @default(cuid())
+  shop String
+
+  type     JobType
+  status   JobStatus @default(PENDING)
+  priority Int       @default(0) // higher runs first; OTP outranks campaigns
+
+  payload Json
+
+  // When this job becomes eligible. Drives scheduling, retry backoff and
+  // quiet-hours deferral alike.
+  runAt DateTime @default(now())
+
+  attempts    Int    @default(0)
+  maxAttempts Int    @default(3)
+  lastError   String? @db.Text
+
+  lockedAt DateTime?
+  lockedBy String?
+
+  // Stops the same job being enqueued twice — e.g. two ABANDONED_CART_FOLLOWUP
+  // jobs for one checkout after a webhook redelivery.
+  dedupeKey String? @unique
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+
+  @@index([status, runAt, priority])
+  @@index([shop, type])
+}
+
+// ---------------------------------------------------------------------------
+// Campaigns
+// ---------------------------------------------------------------------------
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+model Campaign {
+  id   String @id @default(cuid())
+  shop String
+
+  name   String
+  status CampaignStatus @default(DRAFT)
+  body   String         @db.Text
+
+  // { type: "tag" | "orders" | "recency" | "consented", value?: string }
+  segment Json
+
+  // Denormalised counters, incremented as recipients complete. Counting rows in
+  // CampaignRecipient on every progress poll would not survive a large campaign.
+  recipientCount Int @default(0)
+  sentCount      Int @default(0)
+  deliveredCount Int @default(0)
+  failedCount    Int @default(0)
+  creditsUsed    Int @default(0)
+
+  scheduledFor DateTime?
+  startedAt    DateTime?
+  completedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  recipients CampaignRecipient[]
+  logs       SmsLog[]
+
+  @@index([shop, status])
+  @@index([shop, createdAt])
+}
+
+model CampaignRecipient {
+  id         String @id @default(cuid())
+  campaignId String
+
+  phone        String
+  customerName String?
+  customerId   String?
+
+  status   SmsStatus @default(QUEUED)
+  smsLogId String?
+  error    String?   @db.Text
+
+  createdAt DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  // One message per person per campaign, even if they appear in the audience
+  // query twice.
+  @@unique([campaignId, phone])
+  @@index([campaignId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Abandoned checkout
+// ---------------------------------------------------------------------------
+
+enum AbandonedStatus {
+  WAITING // timer running
+  SENT // at least one follow-up sent
+  RECOVERED // an order arrived for this checkout
+  EXPIRED // sequence finished, no order
+  SKIPPED // no phone, or no marketing consent
+}
+
+// Abandoned *checkout*, not abandoned *cart*: Shopify only exposes a phone
+// number once the customer reaches checkout and enters contact details.
+model AbandonedCheckout {
+  id   String @id @default(cuid())
+  shop String
+
+  // Shopify's checkout token — the idempotency key for checkouts/update, which
+  // fires repeatedly for the same checkout as the customer edits it.
+  checkoutToken String
+
+  phone        String?
+  customerName String?
+  customerId   String?
+  email        String?
+
+  cartValue   Decimal @db.Decimal(12, 2)
+  currency    String  @default("BDT")
+  recoveryUrl String  @db.Text
+
+  // Snapshotted at capture time, but re-checked before each send — a customer
+  // who opts out mid-sequence must stop receiving messages.
+  smsConsent Boolean @default(false)
+
+  status         AbandonedStatus @default(WAITING)
+  followUpsSent  Int             @default(0)
+  lastFollowUpAt DateTime?
+
+  abandonedAt DateTime
+  recoveredAt DateTime?
+  // The order that recovered it, if any.
+  orderId     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([shop, checkoutToken])
+  @@index([shop, status])
+  @@index([shop, abandonedAt])
+}
+
+// ---------------------------------------------------------------------------
+// COD OTP
+// ---------------------------------------------------------------------------
+
+enum CodOtpStatus {
+  PENDING
+  VERIFIED
+  EXPIRED
+  FAILED // too many wrong attempts
+}
+
+// Shopify's checkout cannot be blocked, so this is post-order confirmation:
+// order placed → OTP sent → customer confirms → order tagged cod-confirmed.
+model CodOtp {
+  id   String @id @default(cuid())
+  shop String
+
+  orderId     String
+  orderNumber String?
+  phone       String
+
+  // SHA-256 of the code, not the code. A database dump must not let someone
+  // confirm other people's COD orders.
+  codeHash String
+
+  status   CodOtpStatus @default(PENDING)
+  attempts Int          @default(0)
+  maxAttempts Int       @default(5)
+
+  expiresAt  DateTime
+  verifiedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // One live OTP per order. Resending replaces the row rather than adding one.
+  @@unique([shop, orderId])
+  @@index([shop, status])
+}
+
+// ---------------------------------------------------------------------------
+// Blacklist
+// ---------------------------------------------------------------------------
+
+enum BlacklistSource {
+  STOP // customer replied STOP
+  MANUAL
+  DND // operator do-not-disturb list
+  BOUNCED // repeatedly undeliverable
+}
+
+model Blacklist {
+  id   String @id @default(cuid())
+  shop String
+
+  phone  String
+  name   String?
+  source BlacklistSource
+  note   String?         @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@unique([shop, phone])
+  @@index([shop, source])
+}
+
+// ---------------------------------------------------------------------------
+// Webhook idempotency
+// ---------------------------------------------------------------------------
+
+// Shopify delivers webhooks at least once. Recording the delivery id and
+// rejecting repeats is what stops a redelivered orders/create from sending a
+// second SMS and billing the merchant twice. Rows are pruned by the retention
+// job.
+model ProcessedWebhook {
+  id String @id // X-Shopify-Webhook-Id
+
+  shop        String
+  topic       String
+  processedAt DateTime @default(now())
+
+  @@index([processedAt])
+  @@index([shop, topic])
 }
