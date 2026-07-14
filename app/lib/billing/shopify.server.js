@@ -34,6 +34,18 @@ export function isTestBilling() {
   return process.env.SHOPIFY_BILLING_TEST !== "false";
 }
 
+/**
+ * Where Shopify sends the merchant after the confirmation screen.
+ *
+ * Must be an absolute URL on our app. The request origin is only a fallback —
+ * behind a tunnel or a proxy it can be an address Shopify cannot reach back to.
+ */
+export function billingReturnUrl(request) {
+  const origin = process.env.SHOPIFY_APP_URL ?? new URL(request.url).origin;
+
+  return `${origin.replace(/\/$/, "")}/app/billing`;
+}
+
 const PURCHASE_ONE_TIME = `#graphql
   mutation CreateCreditPurchase($name: String!, $price: MoneyInput!, $returnUrl: URL!, $test: Boolean) {
     appPurchaseOneTimeCreate(name: $name, price: $price, returnUrl: $returnUrl, test: $test) {
