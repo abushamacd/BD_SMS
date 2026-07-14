@@ -1,21 +1,42 @@
 import { useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
-import { STATUS_TONE, campaigns } from "../mock/campaigns";
+import db from "../db.server";
+import { STATUS_LABEL, STATUS_TONE, describeSegment } from "../lib/campaigns";
 
 export const loader = async ({ request }) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
 
-  // Phase 1: mock data. Phase 4 loads real Campaign records.
-  return { campaigns };
+  const campaigns = await db.campaign.findMany({
+    where: { shop: session.shop },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
+
+  return {
+    campaigns: campaigns.map((campaign) => ({
+      id: campaign.id,
+      name: campaign.name,
+      status: campaign.status,
+      segment: describeSegment(campaign.segment),
+      recipients: campaign.recipientCount,
+      sent: campaign.sentCount,
+      delivered: campaign.deliveredCount,
+      failed: campaign.failedCount,
+      credits: campaign.creditsUsed,
+      scheduledFor: campaign.scheduledFor
+        ? campaign.scheduledFor.toLocaleString("en-US", {
+            day: "numeric",
+            month: "short",
+            hour: "numeric",
+            minute: "2-digit",
+          })
+        : null,
+    })),
+  };
 };
 
 export default function Campaigns() {
-  const data = useLoaderData();
-
-  const deliveryRate = (campaign) =>
-    campaign.sent > 0
-      ? `${((campaign.delivered / campaign.sent) * 100).toFixed(1)}%`
-      : "—";
+  const { campaigns } = useLoaderData();
 
   return (
     <s-page heading="Campaigns">
@@ -24,10 +45,12 @@ export default function Campaigns() {
       </s-button>
 
       <s-section heading="All campaigns">
-        {data.campaigns.length === 0 ? (
+        {campaigns.length === 0 ? (
           <s-stack direction="block" gap="base">
             <s-paragraph>
-              You have not created any campaigns yet.
+              You have not created any campaigns yet. A campaign sends one message
+              to a segment of your customers — only those who accepted SMS
+              marketing.
             </s-paragraph>
             <s-button variant="primary" href="/app/campaigns/new">
               Create your first campaign
@@ -40,11 +63,11 @@ export default function Campaigns() {
               <s-table-header>Status</s-table-header>
               <s-table-header>Recipients</s-table-header>
               <s-table-header>Sent</s-table-header>
-              <s-table-header>Delivered</s-table-header>
+              <s-table-header>Failed</s-table-header>
               <s-table-header>Credits</s-table-header>
             </s-table-header-row>
             <s-table-body>
-              {data.campaigns.map((campaign) => (
+              {campaigns.map((campaign) => (
                 <s-table-row key={campaign.id}>
                   <s-table-cell>
                     <s-stack direction="block" gap="small-500">
@@ -61,16 +84,19 @@ export default function Campaigns() {
                   </s-table-cell>
                   <s-table-cell>
                     <s-badge tone={STATUS_TONE[campaign.status]}>
-                      {campaign.status}
+                      {STATUS_LABEL[campaign.status]}
                     </s-badge>
                   </s-table-cell>
-                  <s-table-cell>{campaign.recipients.toLocaleString()}</s-table-cell>
+                  <s-table-cell>
+                    {campaign.recipients.toLocaleString()}
+                  </s-table-cell>
                   <s-table-cell>{campaign.sent.toLocaleString()}</s-table-cell>
                   <s-table-cell>
-                    <s-stack direction="block" gap="small-500">
-                      <s-text>{campaign.delivered.toLocaleString()}</s-text>
-                      <s-text color="subdued">{deliveryRate(campaign)}</s-text>
-                    </s-stack>
+                    {campaign.failed > 0 ? (
+                      <s-text tone="critical">{campaign.failed}</s-text>
+                    ) : (
+                      <s-text color="subdued">—</s-text>
+                    )}
                   </s-table-cell>
                   <s-table-cell>{campaign.credits.toLocaleString()}</s-table-cell>
                 </s-table-row>

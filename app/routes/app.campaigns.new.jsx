@@ -1,74 +1,154 @@
-import { useMemo, useState } from "react";
-import { useLoaderData } from "react-router";
+import { useState } from "react";
+import { redirect, useFetcher, useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
 import { CreditCounter } from "../components/CreditCounter";
-import { segmentSms } from "../lib/sms-credits";
-import { RECENCY_OPTIONS, SEGMENTS } from "../mock/campaigns";
-import { CREDIT_BALANCE, TAGS, customers } from "../mock/customers";
+import db from "../db.server";
+import { ORDER_OPTIONS, RECENCY_OPTIONS, SEGMENTS } from "../lib/campaigns";
+import { startCampaign } from "../lib/campaigns/run.server";
+import { getSettings } from "../lib/settings.server";
+import { MAX_PARTS, segmentSms } from "../lib/sms-credits";
 
 export const loader = async ({ request }) => {
-  await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
 
-  return { customers, tags: TAGS, balance: CREDIT_BALANCE };
+  const settings = await getSettings(session.shop);
+
+  // Tags for the picker. Cheap — the first page of customers is enough to offer
+  // the tags a merchant actually uses.
+  let tags = [];
+  try {
+    const response = await admin.graphql(`#graphql
+      query CustomerTags { shop { customerTags(first: 50) { edges { node } } } }
+    `);
+    const body = await response.json();
+    tags = (body?.data?.shop?.customerTags?.edges ?? []).map((edge) => edge.node);
+  } catch {
+    // Not fatal — the merchant can still pick another segment type.
+  }
+
+  return {
+    tags,
+    balance: settings.creditBalance,
+    gatewayMode: settings.gatewayMode,
+  };
 };
 
-const ORDER_OPTIONS = [
-  { value: "1", label: "1 or more orders" },
-  { value: "3", label: "3 or more orders" },
-  { value: "5", label: "5 or more orders" },
-  { value: "10", label: "10 or more orders" },
-];
+export const action = async ({ request }) => {
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
+
+  const form = await request.formData();
+
+  const name = String(form.get("name") ?? "").trim();
+  const body = String(form.get("body") ?? "").trim();
+  const segmentType = String(form.get("segmentType") ?? "consented");
+  const segmentValue = form.get("segmentValue")
+    ? String(form.get("segmentValue"))
+    : null;
+  const schedule = String(form.get("schedule") ?? "now");
+  const sendDate = String(form.get("sendDate") ?? "");
+  const sendHour = Number(form.get("sendHour") ?? 11);
+
+  const errors = [];
+
+  if (!name) errors.push("Give the campaign a name.");
+  if (!body) errors.push("Write a message.");
+
+  const segment = segmentSms(body);
+
+  if (segment.parts > MAX_PARTS) {
+    errors.push(
+      `The message is ${segment.parts} SMS parts long — the limit is ${MAX_PARTS}.`,
+    );
+  }
+
+  let scheduledFor = null;
+
+  if (schedule === "later") {
+    if (!sendDate) {
+      errors.push("Pick a date to send on.");
+    } else {
+      scheduledFor = new Date(sendDate);
+      scheduledFor.setHours(sendHour, 0, 0, 0);
+
+      if (scheduledFor <= new Date()) {
+        errors.push("The scheduled time is in the past.");
+      }
+    }
+  }
+
+  if (errors.length > 0) return { errors };
+
+  const campaign = await db.campaign.create({
+    data: {
+      shop,
+      name,
+      body,
+      segment: { type: segmentType, value: segmentValue },
+      status: scheduledFor ? "SCHEDULED" : "SENDING",
+      scheduledFor,
+    },
+  });
+
+  // The audience is built by the job when the campaign starts, not now — so a
+  // customer who opts out between scheduling and sending is never messaged.
+  await startCampaign(shop, campaign.id, scheduledFor ?? new Date());
+
+  return redirect(`/app/campaigns/${campaign.id}`);
+};
 
 export default function NewCampaign() {
-  const { customers: allCustomers, tags, balance } = useLoaderData();
+  const { tags, balance, gatewayMode } = useLoaderData();
+  const submitter = useFetcher();
+  const estimator = useFetcher();
 
   const [name, setName] = useState("");
-  const [segment, setSegment] = useState("consented");
-  const [tag, setTag] = useState(tags[0]);
+  const [message, setMessage] = useState("");
+  const [segmentType, setSegmentType] = useState("consented");
+  const [tag, setTag] = useState(tags[0] ?? "");
   const [minOrders, setMinOrders] = useState("3");
   const [recency, setRecency] = useState("90");
-  const [message, setMessage] = useState("");
   const [schedule, setSchedule] = useState("now");
   const [sendDate, setSendDate] = useState("");
   const [sendHour, setSendHour] = useState("11");
 
-  // Campaigns are marketing, so consent is not optional — every segment starts
-  // from opted-in customers only. This mirrors what the backend will enforce.
-  const consented = useMemo(
-    () => allCustomers.filter((customer) => customer.smsConsent),
-    [allCustomers],
-  );
+  const segmentValue =
+    segmentType === "tag" ? tag : segmentType === "orders" ? minOrders : segmentType === "recency" ? recency : null;
 
-  const excludedForConsent = allCustomers.length - consented.length;
-
-  const audience = useMemo(() => {
-    switch (segment) {
-      case "tag":
-        return consented.filter((customer) => customer.tags.includes(tag));
-      case "orders":
-        return consented.filter((customer) => customer.orders >= Number(minOrders));
-      case "recency":
-        // Mock: the real query will compare against each customer's last order
-        // date. Here we approximate with low order counts.
-        return consented.filter((customer) => customer.orders <= 2);
-      case "consented":
-      default:
-        return consented;
-    }
-  }, [segment, consented, tag, minOrders]);
+  const estimate = estimator.data?.ok ? estimator.data : null;
+  const estimating = estimator.state !== "idle";
+  const audienceCount = estimate?.count ?? null;
 
   const { credits: creditsEach } = segmentSms(message);
-  const totalCredits = creditsEach * audience.length;
-  const insufficient = totalCredits > balance;
+  const totalCredits = audienceCount !== null ? creditsEach * audienceCount : null;
+  const usesOwnGateway = gatewayMode === "PERSONAL";
+  const insufficient =
+    !usesOwnGateway && totalCredits !== null && totalCredits > balance;
+
+  const runEstimate = () => {
+    const form = new FormData();
+    form.set("type", segmentType);
+    if (segmentValue) form.set("value", segmentValue);
+    estimator.submit(form, { method: "post", action: "/app/campaigns/estimate" });
+  };
+
+  const submit = () => {
+    const form = new FormData();
+    form.set("name", name);
+    form.set("body", message);
+    form.set("segmentType", segmentType);
+    if (segmentValue) form.set("segmentValue", segmentValue);
+    form.set("schedule", schedule);
+    form.set("sendDate", sendDate);
+    form.set("sendHour", sendHour);
+    submitter.submit(form, { method: "post" });
+  };
 
   const canSend =
-    name.trim().length > 0 &&
-    message.trim().length > 0 &&
-    audience.length > 0 &&
+    name.trim() &&
+    message.trim() &&
     !insufficient &&
     (schedule === "now" || sendDate);
-
-  const selectedSegment = SEGMENTS.find((option) => option.value === segment);
 
   return (
     <s-page heading="Create campaign">
@@ -86,12 +166,15 @@ export default function NewCampaign() {
         {schedule === "now" ? "Review and send" : "Review and schedule"}
       </s-button>
 
-      <s-banner tone="info" heading="Preview mode">
-        <s-paragraph>
-          Campaigns are not saved or sent yet — that arrives in Phase 4. The
-          audience estimate and cost preview are live.
-        </s-paragraph>
-      </s-banner>
+      {submitter.data?.errors ? (
+        <s-banner tone="critical" heading="This campaign cannot be sent yet">
+          <s-unordered-list>
+            {submitter.data.errors.map((error) => (
+              <s-list-item key={error}>{error}</s-list-item>
+            ))}
+          </s-unordered-list>
+        </s-banner>
+      ) : null}
 
       <s-section heading="Campaign name">
         <s-text-field
@@ -107,37 +190,41 @@ export default function NewCampaign() {
         <s-stack direction="block" gap="base">
           <s-choice-list
             label="Who should receive this campaign?"
-            values={[segment]}
+            values={[segmentType]}
             onChange={(event) =>
-              setSegment(event.target.values?.[0] ?? event.target.value)
+              setSegmentType(event.target.values?.[0] ?? event.target.value)
             }
           >
             {SEGMENTS.map((option) => (
-              <s-choice
-                key={option.value}
-                value={option.value}
-                details={option.details}
-              >
+              <s-choice key={option.value} value={option.value} details={option.details}>
                 {option.label}
               </s-choice>
             ))}
           </s-choice-list>
 
-          {segment === "tag" ? (
-            <s-select
-              label="Tag"
-              value={tag}
-              onChange={(event) => setTag(event.target.value)}
-            >
-              {tags.map((option) => (
-                <s-option key={option} value={option}>
-                  {option}
-                </s-option>
-              ))}
-            </s-select>
+          {segmentType === "tag" ? (
+            tags.length > 0 ? (
+              <s-select
+                label="Tag"
+                value={tag}
+                onChange={(event) => setTag(event.target.value)}
+              >
+                {tags.map((option) => (
+                  <s-option key={option} value={option}>
+                    {option}
+                  </s-option>
+                ))}
+              </s-select>
+            ) : (
+              <s-banner tone="info" heading="No customer tags found">
+                <s-paragraph>
+                  Tag some customers in Shopify first, then come back.
+                </s-paragraph>
+              </s-banner>
+            )
           ) : null}
 
-          {segment === "orders" ? (
+          {segmentType === "orders" ? (
             <s-select
               label="Orders placed"
               value={minOrders}
@@ -151,7 +238,7 @@ export default function NewCampaign() {
             </s-select>
           ) : null}
 
-          {segment === "recency" ? (
+          {segmentType === "recency" ? (
             <s-select
               label="Last order"
               value={recency}
@@ -167,26 +254,53 @@ export default function NewCampaign() {
 
           <s-banner tone="info" heading="Marketing consent is required">
             <s-paragraph>
-              Campaigns are only sent to customers who accepted SMS marketing in
-              Shopify.{" "}
-              {excludedForConsent > 0
-                ? `${excludedForConsent} of your ${allCustomers.length} customers have not opted in and are excluded from every segment.`
-                : "All of your customers have opted in."}{" "}
-              Order updates and OTP codes are transactional and are not affected
-              by this.
+              Campaigns only go to customers who accepted SMS marketing in Shopify,
+              and never to numbers on your blacklist. Order updates and OTP codes
+              are transactional and are not affected by this.
             </s-paragraph>
           </s-banner>
 
-          <s-box padding="base" background="subdued" borderRadius="base">
-            <s-stack direction="block" gap="small-300">
-              <s-text color="subdued">Estimated audience</s-text>
-              <s-heading>
-                {audience.length.toLocaleString()}{" "}
-                {audience.length === 1 ? "customer" : "customers"}
-              </s-heading>
-              <s-text color="subdued">{selectedSegment?.label}</s-text>
-            </s-stack>
-          </s-box>
+          <s-stack direction="inline" gap="base" alignItems="center">
+            <s-button
+              onClick={runEstimate}
+              {...(estimating ? { loading: true } : {})}
+            >
+              Preview audience
+            </s-button>
+            <s-text color="subdued">
+              Checks how many customers this actually reaches.
+            </s-text>
+          </s-stack>
+
+          {estimator.data && !estimator.data.ok ? (
+            <s-banner tone="critical" heading="Could not load your customers">
+              <s-paragraph>{estimator.data.error}</s-paragraph>
+            </s-banner>
+          ) : null}
+
+          {estimate ? (
+            <s-box padding="base" background="subdued" borderRadius="base">
+              <s-stack direction="block" gap="small-300">
+                <s-text color="subdued">This campaign will reach</s-text>
+                <s-heading>
+                  {estimate.count.toLocaleString()}{" "}
+                  {estimate.count === 1 ? "customer" : "customers"}
+                </s-heading>
+                <s-text color="subdued">
+                  {estimate.scanned.toLocaleString()} customers checked ·{" "}
+                  {estimate.skippedNoConsent.toLocaleString()} without SMS consent ·{" "}
+                  {estimate.skippedBadPhone.toLocaleString()} without a usable
+                  Bangladeshi number
+                </s-text>
+                {estimate.truncated ? (
+                  <s-text tone="warning">
+                    Capped at 50,000 recipients — this campaign will not reach
+                    everyone who matched.
+                  </s-text>
+                ) : null}
+              </s-stack>
+            </s-box>
+          ) : null}
         </s-stack>
       </s-section>
 
@@ -201,7 +315,7 @@ export default function NewCampaign() {
           />
           <CreditCounter
             text={message}
-            recipients={audience.length}
+            recipients={audienceCount ?? undefined}
             onFix={setMessage}
           />
         </s-stack>
@@ -222,27 +336,34 @@ export default function NewCampaign() {
           </s-choice-list>
 
           {schedule === "later" ? (
-            <s-grid
-              gridTemplateColumns="repeat(auto-fit, minmax(200px, 1fr))"
-              gap="base"
-            >
-              <s-date-field
-                label="Date"
-                value={sendDate}
-                onChange={(event) => setSendDate(event.target.value)}
-              />
-              <s-select
-                label="Time"
-                value={sendHour}
-                onChange={(event) => setSendHour(event.target.value)}
+            <s-stack direction="block" gap="base">
+              <s-grid
+                gridTemplateColumns="repeat(auto-fit, minmax(200px, 1fr))"
+                gap="base"
               >
-                {Array.from({ length: 24 }, (_, hour) => (
-                  <s-option key={hour} value={String(hour)}>
-                    {`${hour % 12 === 0 ? 12 : hour % 12}:00 ${hour < 12 ? "AM" : "PM"}`}
-                  </s-option>
-                ))}
-              </s-select>
-            </s-grid>
+                <s-date-field
+                  label="Date"
+                  value={sendDate}
+                  onChange={(event) => setSendDate(event.target.value)}
+                />
+                <s-select
+                  label="Time"
+                  value={sendHour}
+                  onChange={(event) => setSendHour(event.target.value)}
+                >
+                  {Array.from({ length: 24 }, (_, hour) => (
+                    <s-option key={hour} value={String(hour)}>
+                      {`${hour % 12 === 0 ? 12 : hour % 12}:00 ${hour < 12 ? "AM" : "PM"}`}
+                    </s-option>
+                  ))}
+                </s-select>
+              </s-grid>
+
+              <s-text color="subdued">
+                The audience is recalculated when the campaign starts, so anyone who
+                opts out before then will not be messaged.
+              </s-text>
+            </s-stack>
           ) : null}
         </s-stack>
       </s-section>
@@ -251,36 +372,54 @@ export default function NewCampaign() {
         <s-stack direction="block" gap="base">
           <s-stack direction="block" gap="small-300">
             <s-text color="subdued">Recipients</s-text>
-            <s-heading>{audience.length.toLocaleString()}</s-heading>
+            <s-heading>
+              {audienceCount === null ? "—" : audienceCount.toLocaleString()}
+            </s-heading>
+            {audienceCount === null ? (
+              <s-text color="subdued">Preview the audience to see the cost.</s-text>
+            ) : null}
           </s-stack>
 
           <s-divider />
 
           <s-stack direction="block" gap="small-300">
             <s-text color="subdued">Total cost</s-text>
-            <s-heading>{totalCredits.toLocaleString()} credits</s-heading>
+            <s-heading>
+              {totalCredits === null
+                ? "—"
+                : `${totalCredits.toLocaleString()} credits`}
+            </s-heading>
             <s-text color="subdued">
               {creditsEach} {creditsEach === 1 ? "credit" : "credits"} per recipient
             </s-text>
           </s-stack>
 
-          <s-divider />
+          {!usesOwnGateway ? (
+            <>
+              <s-divider />
+              <s-stack direction="block" gap="small-300">
+                <s-text color="subdued">Balance after sending</s-text>
+                <s-stack direction="inline" gap="small" alignItems="center">
+                  <s-heading>
+                    {totalCredits === null
+                      ? balance.toLocaleString()
+                      : (balance - totalCredits).toLocaleString()}
+                  </s-heading>
+                  {insufficient ? (
+                    <s-badge tone="critical">Not enough</s-badge>
+                  ) : null}
+                </s-stack>
+                <s-text color="subdued">
+                  You have {balance.toLocaleString()} credits
+                </s-text>
+              </s-stack>
 
-          <s-stack direction="block" gap="small-300">
-            <s-text color="subdued">Balance after sending</s-text>
-            <s-stack direction="inline" gap="small" alignItems="center">
-              <s-heading>{(balance - totalCredits).toLocaleString()}</s-heading>
-              {insufficient ? <s-badge tone="critical">Not enough</s-badge> : null}
-            </s-stack>
-            <s-text color="subdued">
-              You have {balance.toLocaleString()} credits
-            </s-text>
-          </s-stack>
-
-          {insufficient ? (
-            <s-button variant="primary" href="/app/billing">
-              Recharge credits
-            </s-button>
+              {insufficient ? (
+                <s-button variant="primary" href="/app/billing">
+                  Recharge credits
+                </s-button>
+              ) : null}
+            </>
           ) : null}
         </s-stack>
       </s-section>
@@ -291,24 +430,38 @@ export default function NewCampaign() {
             <s-text type="strong">{name || "Untitled campaign"}</s-text> will be
             sent to{" "}
             <s-text type="strong">
-              {audience.length.toLocaleString()}{" "}
-              {audience.length === 1 ? "customer" : "customers"}
-            </s-text>{" "}
-            for{" "}
-            <s-text type="strong">{totalCredits.toLocaleString()} credits</s-text>
+              {audienceCount === null
+                ? "everyone who matches this segment"
+                : `${audienceCount.toLocaleString()} ${audienceCount === 1 ? "customer" : "customers"}`}
+            </s-text>
             {schedule === "now"
               ? ", starting immediately."
               : ` on ${sendDate || "the selected date"}.`}
           </s-paragraph>
 
+          {audienceCount === null ? (
+            <s-banner tone="warning" heading="You have not previewed the audience">
+              <s-paragraph>
+                The exact number of recipients — and the exact cost — is worked out
+                when the campaign starts. Preview the audience first if you want to
+                know before you commit.
+              </s-paragraph>
+            </s-banner>
+          ) : null}
+
           <s-box padding="base" background="subdued" borderRadius="base">
             <s-paragraph>{message}</s-paragraph>
           </s-box>
 
-          <CreditCounter text={message} recipients={audience.length} />
+          <CreditCounter text={message} recipients={audienceCount ?? undefined} />
         </s-stack>
 
-        <s-button slot="primary-action" variant="primary">
+        <s-button
+          slot="primary-action"
+          variant="primary"
+          onClick={submit}
+          {...(submitter.state !== "idle" ? { loading: true } : {})}
+        >
           {schedule === "now" ? "Send campaign" : "Schedule campaign"}
         </s-button>
         <s-button
