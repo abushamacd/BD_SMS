@@ -13,7 +13,7 @@ import { claimWebhook } from "./idempotency.server.js";
  *  - RETURN FAST. Shopify times out at 5 seconds. The handler only renders and
  *    enqueues; the worker does the sending.
  */
-export async function handleOrderWebhook(request, handler) {
+export async function handleShopifyWebhook(request, handler) {
   const { shop, topic, payload, admin, webhookId } =
     await authenticate.webhook(request);
 
@@ -25,9 +25,10 @@ export async function handleOrderWebhook(request, handler) {
       return new Response();
     }
 
-    const result = await handler({ shop, admin, payload });
+    const result = await handler({ shop, admin, payload, topic });
 
-    const acted = result?.queued || result?.scheduled || result?.recovered;
+    const acted =
+      result?.queued || result?.scheduled || result?.recovered || result?.acted;
 
     console.log(
       `[webhook] ${topic} for ${shop}: ${
@@ -40,3 +41,6 @@ export async function handleOrderWebhook(request, handler) {
 
   return new Response();
 }
+
+/** The original name, kept so the seven order webhook routes read the same. */
+export const handleOrderWebhook = handleShopifyWebhook;

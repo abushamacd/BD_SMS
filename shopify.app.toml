@@ -60,6 +60,17 @@ api_version = "2026-10"
   uri = "/webhooks/checkouts/update"
   topics = [ "checkouts/update" ]
 
+  # Billing. Without these, the app only learns a charge was approved when the
+  # merchant happens to open the Billing page — and would go on believing a
+  # cancelled or lapsed subscription is still active.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/subscriptions_update"
+  topics = [ "app_subscriptions/update" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/purchases_one_time_update"
+  topics = [ "app_purchases_one_time/update" ]
+
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
 
