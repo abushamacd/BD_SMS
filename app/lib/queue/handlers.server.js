@@ -1,3 +1,4 @@
+import { expireCodOtp } from "../orders/cod-otp.server.js";
 import { SendOutcome, retrySend, sendSms } from "../sms/send.server.js";
 import { updatePayload } from "./queue.server.js";
 
@@ -62,10 +63,16 @@ async function handleSendSms(job) {
   }
 }
 
+/** The OTP has run out its 24 hours. The order stays tagged cod-unconfirmed. */
+async function handleCodOtpExpire(job) {
+  await expireCodOtp(job.payload);
+}
+
 // Phases 4-6 register their handlers here. A job type with no handler is buried
 // rather than retried forever.
 export const HANDLERS = {
   SEND_SMS: handleSendSms,
+  COD_OTP_EXPIRE: handleCodOtpExpire,
 };
 
 export function getHandler(type) {

@@ -2,11 +2,13 @@ import db from "../../db.server.js";
 import { enqueue } from "../queue/queue.server.js";
 import { getSettings, getTemplate } from "../settings.server.js";
 import { renderMessage } from "../templates.server.js";
+import { startCodVerification } from "./cod-otp.server.js";
 import {
   extractPhone,
   extractCustomerName,
   extractSmsConsent,
   extractTracking,
+  isCashOnDelivery,
   orderVariables,
 } from "./extract.server.js";
 
@@ -116,8 +118,18 @@ async function queueOrderSms({
   return { queued: true };
 }
 
+/**
+ * orders/create.
+ *
+ * A COD order gets two independent things: the ordinary "we got your order" SMS
+ * (if enabled), and the OTP that confirms it is a real customer (if enabled).
+ * They are separate features with separate toggles, so a merchant who only wants
+ * COD verification is not forced to also pay for an order-confirmation SMS.
+ */
 export async function onOrderCreated({ shop, admin, order }) {
-  return queueOrderSms({
+  const results = {};
+
+  results.newOrder = await queueOrderSms({
     shop,
     admin,
     order,
@@ -125,6 +137,21 @@ export async function onOrderCreated({ shop, admin, order }) {
     smsType: "NEW_ORDER",
     dedupeKey: `NEW_ORDER:${order.id}`,
   });
+
+  if (isCashOnDelivery(order)) {
+    results.codOtp = await startCodVerification({ shop, admin, order });
+  }
+
+  return {
+    queued: Boolean(results.newOrder.queued || results.codOtp?.queued),
+    reason: [
+      results.newOrder.reason && `new order: ${results.newOrder.reason}`,
+      results.codOtp?.reason && `cod otp: ${results.codOtp.reason}`,
+    ]
+      .filter(Boolean)
+      .join("; "),
+    results,
+  };
 }
 
 export async function onOrderCancelled({ shop, admin, order }) {

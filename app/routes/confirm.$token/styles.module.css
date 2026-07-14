@@ -1,0 +1,141 @@
+/* Customer-facing, so it is styled for a phone browser in Bangladesh: no
+   framework, no web fonts, nothing to download over a slow connection. */
+
+.page {
+  min-height: 100vh;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: #f6f6f7;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #202223;
+}
+
+.card {
+  width: 100%;
+  max-width: 26rem;
+  background: #fff;
+  border-radius: 0.75rem;
+  padding: 2rem 1.5rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  text-align: center;
+}
+
+.icon {
+  width: 3rem;
+  height: 3rem;
+  margin: 0 auto 1rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  font-weight: 700;
+  background: #fff4e4;
+  color: #b98900;
+}
+
+.success {
+  background: #e3f1df;
+  color: #008060;
+}
+
+.heading {
+  margin: 0 0 0.75rem;
+  font-size: 1.375rem;
+  line-height: 1.3;
+}
+
+.text {
+  margin: 0 0 1.25rem;
+  color: #6d7175;
+  line-height: 1.5;
+}
+
+.summary {
+  margin: 0 0 1.5rem;
+  padding: 1rem;
+  background: #f6f6f7;
+  border-radius: 0.5rem;
+  text-align: left;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.row + .row {
+  margin-top: 0.5rem;
+}
+
+.row dt {
+  color: #6d7175;
+}
+
+.row dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.input {
+  width: 100%;
+  padding: 0.875rem;
+  font-size: 1.5rem;
+  /* Wide letter spacing so six digits are easy to check on a small screen. */
+  letter-spacing: 0.4em;
+  text-align: center;
+  border: 1px solid #c9cccf;
+  border-radius: 0.5rem;
+  box-sizing: border-box;
+}
+
+.input:focus {
+  outline: 2px solid #005bd3;
+  border-color: #005bd3;
+}
+
+.button {
+  width: 100%;
+  padding: 0.875rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fff;
+  background: #303030;
+  border: 0;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: #1a1a1a;
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.error {
+  margin: 0;
+  padding: 0.75rem;
+  background: #fdecea;
+  color: #8e1f0b;
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.hint {
+  margin: 1.25rem 0 0;
+  font-size: 0.8125rem;
+  color: #8c9196;
+}

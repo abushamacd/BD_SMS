@@ -18,6 +18,7 @@ const BLOCK_IF_EMPTY = new Set([
   "tracking_url",
   "recovery_url",
   "otp_code",
+  "confirm_url",
   "discount_code",
 ]);
 
@@ -38,7 +39,14 @@ export const TEMPLATE_VARIABLES = {
   ],
   DELIVERY: ["customer_name", "order_number", "shop_name"],
   CANCELLED: ["customer_name", "order_number", "shop_name"],
-  COD_OTP: ["customer_name", "order_number", "otp_code", "shop_name"],
+  COD_OTP: [
+    "customer_name",
+    "order_number",
+    "order_total",
+    "otp_code",
+    "confirm_url",
+    "shop_name",
+  ],
   ABANDONED_CART_1: ["customer_name", "cart_total", "recovery_url", "shop_name"],
   ABANDONED_CART_2: [
     "customer_name",

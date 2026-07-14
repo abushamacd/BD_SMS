@@ -488,7 +488,12 @@ model CodOtp {
 
   orderId     String
   orderNumber String?
+  orderTotal  String?
   phone       String
+
+  // The unguessable part of the confirmation link. Identifies which order the
+  // customer is confirming, without exposing the order id or the shop.
+  token String @unique
 
   // SHA-256 of the code, not the code. A database dump must not let someone
   // confirm other people's COD orders.

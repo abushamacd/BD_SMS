@@ -32,7 +32,10 @@ const DEFAULT_TEMPLATES = [
   {
     key: "COD_OTP",
     enabled: false,
-    body: "Your {{shop_name}} verification code is {{otp_code}}. Reply with this code to confirm order #{{order_number}}.",
+    // The link is what the customer acts on; the code is what proves they got
+    // this SMS. "Reply with this code" would need inbound SMS, which BD gateways
+    // do not reliably route back to us.
+    body: "Order #{{order_number}}: your confirmation code is {{otp_code}}. Confirm here: {{confirm_url}} - {{shop_name}}",
   },
   {
     key: "ABANDONED_CART_1",
