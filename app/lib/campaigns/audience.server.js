@@ -1,4 +1,5 @@
 import { normalizeBdPhone } from "../phone.js";
+import { ProtectedDataError, isProtectedDataError } from "../protected-data.js";
 
 // Building a campaign audience.
 //
@@ -89,14 +90,27 @@ export async function buildAudience(admin, segment) {
   let truncated = false;
 
   for (;;) {
-    const response = await admin.graphql(CUSTOMERS_QUERY, {
-      variables: { first: PAGE_SIZE, after, query: query || null },
-    });
+    let body;
 
-    const body = await response.json();
+    try {
+      const response = await admin.graphql(CUSTOMERS_QUERY, {
+        variables: { first: PAGE_SIZE, after, query: query || null },
+      });
+
+      body = await response.json();
+    } catch (error) {
+      if (isProtectedDataError(error)) throw new ProtectedDataError();
+      throw error;
+    }
+
     const page = body?.data?.customers;
 
     if (!page) {
+      // Not a broken query — an ungranted permission. Worth distinguishing,
+      // because a campaign that fails here must not be retried: no number of
+      // retries will grant the app access to customer data.
+      if (isProtectedDataError(body?.errors)) throw new ProtectedDataError();
+
       throw new Error(
         `Could not load customers: ${JSON.stringify(body?.errors ?? body).slice(0, 200)}`,
       );

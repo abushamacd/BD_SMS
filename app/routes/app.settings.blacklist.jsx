@@ -1,98 +1,178 @@
-import { useMemo, useState } from "react";
-import { useLoaderData } from "react-router";
+import { useEffect, useMemo, useState } from "react";
+import { useFetcher, useLoaderData, useSearchParams } from "react-router";
+import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { SettingsNav } from "../components/SettingsNav";
-import { parsePhoneList } from "../lib/phone";
+import db from "../db.server";
+import { PAGE_SIZE, SOURCES, SOURCE_LABEL, SOURCE_TONE } from "../lib/blacklist";
 import {
-  SOURCES,
-  SOURCE_LABEL,
-  SOURCE_TONE,
-  entries,
-  settings,
-} from "../mock/blacklist";
+  addToBlacklist,
+  queryBlacklist,
+  removeFromBlacklist,
+} from "../lib/blacklist.server";
+import { formatBdPhone, parsePhoneList } from "../lib/phone";
+import { getSettings } from "../lib/settings.server";
 
 export const loader = async ({ request }) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
 
-  // Phase 1: mock data. Phase 6 loads real Blacklist records.
-  return { entries, settings, sources: SOURCES };
+  const url = new URL(request.url);
+  const page = Math.max(1, Number(url.searchParams.get("page") ?? 1));
+
+  const [result, settings] = await Promise.all([
+    queryBlacklist(shop, url.searchParams, { page }),
+    getSettings(shop),
+  ]);
+
+  return {
+    total: result.total,
+    stopCount: result.stopCount,
+    allCount: result.allCount,
+    page: result.page,
+    pages: result.pages,
+    blockTransactional: settings.blockTransactional,
+    rows: result.rows.map((row) => ({
+      id: row.id,
+      phone: row.phone,
+      name: row.name,
+      source: row.source,
+      note: row.note,
+      addedAt: row.createdAt.toLocaleString("en-US", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }),
+    })),
+  };
+};
+
+export const action = async ({ request }) => {
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
+
+  const form = await request.formData();
+  const intent = form.get("intent");
+
+  if (intent === "add") {
+    const result = await addToBlacklist(shop, {
+      input: String(form.get("phones") ?? ""),
+      note: String(form.get("note") ?? ""),
+    });
+
+    if (result.added === 0 && result.skipped === 0) {
+      return {
+        intent: "add",
+        ok: false,
+        message: "None of those numbers could be read as a Bangladeshi number.",
+      };
+    }
+
+    return {
+      intent: "add",
+      ok: true,
+      message: [
+        result.added > 0 &&
+          `${result.added} number${result.added === 1 ? "" : "s"} blocked.`,
+        result.skipped > 0 &&
+          `${result.skipped} ${result.skipped === 1 ? "was" : "were"} already blocked.`,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    };
+  }
+
+  if (intent === "remove") {
+    const { removed } = await removeFromBlacklist(shop, String(form.get("id")));
+
+    return {
+      intent: "remove",
+      ok: removed,
+      message: removed ? "Number unblocked." : "That number was not on the list.",
+    };
+  }
+
+  if (intent === "settings") {
+    await db.shopSettings.update({
+      where: { shop },
+      data: { blockTransactional: form.get("blockTransactional") === "true" },
+    });
+
+    return { intent: "settings", ok: true, message: "Saved." };
+  }
+
+  return { ok: false, message: `Unknown action: ${intent}` };
 };
 
 export default function Blacklist() {
   const data = useLoaderData();
+  const [params, setParams] = useSearchParams();
+  const addFetcher = useFetcher();
+  const removeFetcher = useFetcher();
+  const settingsFetcher = useFetcher();
+  const shopify = useAppBridge();
 
-  const [list, setList] = useState(data.entries);
-  const [blockTransactional, setBlockTransactional] = useState(
-    data.settings.blockTransactional,
-  );
-  const [search, setSearch] = useState("");
-  const [source, setSource] = useState("all");
+  const [search, setSearch] = useState(params.get("q") ?? "");
   const [input, setInput] = useState("");
   const [note, setNote] = useState("");
 
+  // The switch is optimistic: the fetcher's own value while it is in flight,
+  // otherwise whatever the server last told us.
+  const blockTransactional = settingsFetcher.formData
+    ? settingsFetcher.formData.get("blockTransactional") === "true"
+    : data.blockTransactional;
+
   const parsed = useMemo(() => parsePhoneList(input), [input]);
 
-  const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase();
+  const addResult = addFetcher.data?.intent === "add" ? addFetcher.data : null;
 
-    return list.filter((entry) => {
-      if (source !== "all" && entry.source !== source) return false;
-      if (
-        term &&
-        !entry.phone.includes(term) &&
-        !entry.name.toLowerCase().includes(term)
-      ) {
-        return false;
-      }
-      return true;
-    });
-  }, [list, search, source]);
+  useEffect(() => {
+    if (addResult?.ok) {
+      shopify.toast.show(addResult.message);
+      setInput("");
+      setNote("");
+    }
+  }, [addResult, shopify]);
 
-  const alreadyBlocked = useMemo(
-    () => new Set(list.map((entry) => entry.phone)),
-    [list],
-  );
+  const setParam = (key, value) => {
+    const next = new URLSearchParams(params);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    next.delete("page");
+    setParams(next);
+  };
 
-  const toAdd = parsed.valid.filter((entry) => !alreadyBlocked.has(entry.e164));
-  const duplicates = parsed.valid.length - toAdd.length;
-
-  // Local-only until Phase 6 — this edits the list in the browser so the screen
-  // can be reviewed, but nothing is persisted.
   const addNumbers = () => {
-    setList((prev) => [
-      ...toAdd.map((entry, index) => ({
-        id: `bl_new_${Date.now()}_${index}`,
-        phone: entry.e164,
-        name: "Unknown",
-        source: "manual",
-        addedAt: "Just now",
-        note: note.trim() || "Added manually",
-      })),
-      ...prev,
-    ]);
-    setInput("");
-    setNote("");
+    const form = new FormData();
+    form.set("intent", "add");
+    form.set("phones", input);
+    form.set("note", note);
+    addFetcher.submit(form, { method: "post" });
   };
 
   const removeEntry = (id) => {
-    setList((prev) => prev.filter((entry) => entry.id !== id));
+    const form = new FormData();
+    form.set("intent", "remove");
+    form.set("id", id);
+    removeFetcher.submit(form, { method: "post" });
   };
 
-  const stopCount = list.filter((entry) => entry.source === "stop").length;
+  const toggleBlockTransactional = () => {
+    const form = new FormData();
+    form.set("intent", "settings");
+    form.set("blockTransactional", String(!blockTransactional));
+    settingsFetcher.submit(form, { method: "post" });
+  };
+
+  const hasFilters = [...params.keys()].some((key) => key !== "page");
 
   return (
     <s-page heading="Blacklist">
       <s-section>
         <SettingsNav current="/app/settings/blacklist" />
       </s-section>
-
-      <s-banner tone="info" heading="Preview mode">
-        <s-paragraph>
-          Changes here are not saved yet — STOP handling and the real blacklist
-          arrive in Phase 6. Adding and removing works in the browser so you can
-          review the screen.
-        </s-paragraph>
-      </s-banner>
 
       <s-section heading="How opt-out works">
         <s-stack direction="block" gap="base">
@@ -105,8 +185,8 @@ export default function Blacklist() {
           </s-paragraph>
 
           <s-stack direction="inline" gap="small" alignItems="center">
-            <s-badge tone="critical">{stopCount} opted out</s-badge>
-            <s-badge tone="neutral">{list.length} blocked in total</s-badge>
+            <s-badge tone="critical">{data.stopCount} opted out</s-badge>
+            <s-badge tone="neutral">{data.allCount} blocked in total</s-badge>
           </s-stack>
 
           <s-divider />
@@ -115,11 +195,14 @@ export default function Blacklist() {
             label="Also block order updates and OTP codes"
             details="Off by default. Opting out of marketing does not usually mean a customer wants to stop receiving the OTP that confirms their own order, or the SMS telling them it has shipped. Turn this on only if you want a blocked number to receive nothing at all."
             checked={blockTransactional}
-            onChange={() => setBlockTransactional((value) => !value)}
+            onChange={toggleBlockTransactional}
           />
 
           {blockTransactional ? (
-            <s-banner tone="warning" heading="COD verification will fail for these numbers">
+            <s-banner
+              tone="warning"
+              heading="COD verification will fail for these numbers"
+            >
               <s-paragraph>
                 Blocked customers will not receive their COD OTP, so their orders
                 can never be confirmed and will stay tagged as unverified.
@@ -149,14 +232,15 @@ export default function Blacklist() {
 
           {input.trim() ? (
             <s-stack direction="inline" gap="small" alignItems="center">
-              <s-badge tone="success">{toAdd.length} to block</s-badge>
-              {duplicates > 0 ? (
-                <s-badge tone="neutral">{duplicates} already blocked</s-badge>
+              <s-badge tone="success">{parsed.valid.length} to block</s-badge>
+              {parsed.duplicates > 0 ? (
+                <s-badge tone="neutral">
+                  {parsed.duplicates} duplicate
+                  {parsed.duplicates === 1 ? "" : "s"} removed
+                </s-badge>
               ) : null}
               {parsed.invalid.length > 0 ? (
-                <s-badge tone="critical">
-                  {parsed.invalid.length} invalid
-                </s-badge>
+                <s-badge tone="critical">{parsed.invalid.length} invalid</s-badge>
               ) : null}
             </s-stack>
           ) : null}
@@ -173,14 +257,21 @@ export default function Blacklist() {
             </s-banner>
           ) : null}
 
+          {addResult && !addResult.ok ? (
+            <s-banner tone="critical" heading="Nothing was blocked">
+              <s-paragraph>{addResult.message}</s-paragraph>
+            </s-banner>
+          ) : null}
+
           <s-stack direction="inline" gap="base">
             <s-button
               variant="primary"
               onClick={addNumbers}
-              {...(toAdd.length === 0 ? { disabled: true } : {})}
+              {...(addFetcher.state !== "idle" ? { loading: true } : {})}
+              {...(parsed.valid.length === 0 ? { disabled: true } : {})}
             >
-              {toAdd.length > 1
-                ? `Block ${toAdd.length} numbers`
+              {parsed.valid.length > 1
+                ? `Block ${parsed.valid.length} numbers`
                 : "Block number"}
             </s-button>
           </s-stack>
@@ -189,24 +280,22 @@ export default function Blacklist() {
 
       <s-section heading="Blocked numbers">
         <s-stack direction="block" gap="base">
-          <s-grid
-            gridTemplateColumns="repeat(auto-fit, minmax(200px, 1fr))"
-            gap="base"
-          >
+          <s-grid gridTemplateColumns="repeat(auto-fit, minmax(200px, 1fr))" gap="base">
             <s-search-field
               label="Search"
-              placeholder="Name or phone number"
+              placeholder="Name, phone number or reason"
               value={search}
               onInput={(event) => setSearch(event.target.value)}
+              onChange={(event) => setParam("q", event.target.value)}
             />
 
             <s-select
               label="Reason"
-              value={source}
-              onChange={(event) => setSource(event.target.value)}
+              value={params.get("source") ?? ""}
+              onChange={(event) => setParam("source", event.target.value)}
             >
-              <s-option value="all">All reasons</s-option>
-              {data.sources.map((option) => (
+              <s-option value="">All reasons</s-option>
+              {SOURCES.map((option) => (
                 <s-option key={option.value} value={option.value}>
                   {option.label}
                 </s-option>
@@ -214,50 +303,93 @@ export default function Blacklist() {
             </s-select>
           </s-grid>
 
-          {filtered.length === 0 ? (
+          {data.rows.length === 0 ? (
             <s-paragraph>
-              {list.length === 0
+              {data.allCount === 0
                 ? "No numbers are blocked. Customers who reply STOP will appear here automatically."
                 : "No blocked numbers match these filters."}
             </s-paragraph>
           ) : (
-            <s-table variant="auto">
-              <s-table-header-row>
-                <s-table-header>Number</s-table-header>
-                <s-table-header>Reason</s-table-header>
-                <s-table-header>Blocked</s-table-header>
-                <s-table-header>Action</s-table-header>
-              </s-table-header-row>
-              <s-table-body>
-                {filtered.map((entry) => (
-                  <s-table-row key={entry.id}>
-                    <s-table-cell>
-                      <s-stack direction="block" gap="small-500">
-                        <s-text>{entry.phone}</s-text>
-                        <s-text color="subdued">{entry.name}</s-text>
-                      </s-stack>
-                    </s-table-cell>
-                    <s-table-cell>
-                      <s-stack direction="block" gap="small-500">
-                        <s-badge tone={SOURCE_TONE[entry.source]}>
-                          {SOURCE_LABEL[entry.source]}
-                        </s-badge>
-                        <s-text color="subdued">{entry.note}</s-text>
-                      </s-stack>
-                    </s-table-cell>
-                    <s-table-cell>{entry.addedAt}</s-table-cell>
-                    <s-table-cell>
-                      <s-button
-                        onClick={() => removeEntry(entry.id)}
-                        {...(entry.source === "stop" ? { tone: "critical" } : {})}
-                      >
-                        Unblock
-                      </s-button>
-                    </s-table-cell>
-                  </s-table-row>
-                ))}
-              </s-table-body>
-            </s-table>
+            <s-stack direction="block" gap="base">
+              <s-table variant="auto">
+                <s-table-header-row>
+                  <s-table-header>Number</s-table-header>
+                  <s-table-header>Reason</s-table-header>
+                  <s-table-header>Blocked</s-table-header>
+                  <s-table-header>Action</s-table-header>
+                </s-table-header-row>
+                <s-table-body>
+                  {data.rows.map((entry) => (
+                    <s-table-row key={entry.id}>
+                      <s-table-cell>
+                        <s-stack direction="block" gap="small-500">
+                          <s-text>{formatBdPhone(entry.phone)}</s-text>
+                          <s-text color="subdued">{entry.name ?? "Unknown"}</s-text>
+                        </s-stack>
+                      </s-table-cell>
+                      <s-table-cell>
+                        <s-stack direction="block" gap="small-500">
+                          <s-badge tone={SOURCE_TONE[entry.source]}>
+                            {SOURCE_LABEL[entry.source]}
+                          </s-badge>
+                          {entry.note ? (
+                            <s-text color="subdued">{entry.note}</s-text>
+                          ) : null}
+                        </s-stack>
+                      </s-table-cell>
+                      <s-table-cell>{entry.addedAt}</s-table-cell>
+                      <s-table-cell>
+                        <s-button
+                          onClick={() => removeEntry(entry.id)}
+                          {...(entry.source === "STOP" ? { tone: "critical" } : {})}
+                          {...(removeFetcher.state !== "idle" ? { loading: true } : {})}
+                        >
+                          Unblock
+                        </s-button>
+                      </s-table-cell>
+                    </s-table-row>
+                  ))}
+                </s-table-body>
+              </s-table>
+
+              {data.pages > 1 ? (
+                <s-stack
+                  direction="inline"
+                  gap="base"
+                  alignItems="center"
+                  justifyContent="center"
+                >
+                  <s-button
+                    {...(data.page <= 1 ? { disabled: true } : {})}
+                    onClick={() => {
+                      const next = new URLSearchParams(params);
+                      next.set("page", String(data.page - 1));
+                      setParams(next);
+                    }}
+                  >
+                    Previous
+                  </s-button>
+                  <s-text color="subdued">
+                    Page {data.page} of {data.pages}
+                  </s-text>
+                  <s-button
+                    {...(data.page >= data.pages ? { disabled: true } : {})}
+                    onClick={() => {
+                      const next = new URLSearchParams(params);
+                      next.set("page", String(data.page + 1));
+                      setParams(next);
+                    }}
+                  >
+                    Next
+                  </s-button>
+                </s-stack>
+              ) : null}
+
+              <s-text color="subdued">
+                Showing {data.rows.length} of {data.total.toLocaleString()}
+                {hasFilters ? " matching" : ""} · {PAGE_SIZE} per page
+              </s-text>
+            </s-stack>
           )}
 
           <s-text color="subdued">

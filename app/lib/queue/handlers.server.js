@@ -1,4 +1,5 @@
-import { runCampaignBatch } from "../campaigns/run.server.js";
+import { CampaignFailed, runCampaignBatch } from "../campaigns/run.server.js";
+import { runAbandonedFollowUp } from "../checkouts/abandoned.server.js";
 import { expireCodOtp } from "../orders/cod-otp.server.js";
 import { SendOutcome, retrySend, sendSms } from "../sms/send.server.js";
 import { updatePayload } from "./queue.server.js";
@@ -77,7 +78,20 @@ async function handleCodOtpExpire(job) {
  * OTP behind it.
  */
 async function handleSendCampaign(job) {
-  const result = await runCampaignBatch(job.payload);
+  let result;
+
+  try {
+    result = await runCampaignBatch(job.payload);
+  } catch (error) {
+    // The campaign cannot run at all — Shopify refused the audience query, say.
+    // The campaign row is already marked FAILED with the reason, so retrying
+    // would just burn attempts and end with a buried job and no explanation.
+    if (error instanceof CampaignFailed) {
+      throw new PermanentError(error.message);
+    }
+
+    throw error;
+  }
 
   if (result.done) {
     if (result.reason) {
@@ -91,11 +105,31 @@ async function handleSendCampaign(job) {
   return { reschedule: result.rescheduleTo ?? new Date(), reason: result.reason };
 }
 
+/**
+ * ABANDONED_CART_FOLLOWUP — one reminder in the sequence.
+ *
+ * The job re-checks the world before sending: the customer may have ordered,
+ * opted out, or simply come back and carried on editing their checkout. A
+ * reschedule is not a failure and must not burn a retry.
+ */
+async function handleAbandonedFollowUp(job) {
+  const result = await runAbandonedFollowUp(job.payload);
+
+  if (result.rescheduleTo) {
+    return { reschedule: result.rescheduleTo, reason: result.reason };
+  }
+
+  if (!result.sent && result.reason) {
+    console.log(`[abandoned ${job.payload.checkoutId}] not sent: ${result.reason}`);
+  }
+}
+
 // Phases 5-6 register their handlers here. A job type with no handler is buried
 // rather than retried forever.
 export const HANDLERS = {
   SEND_SMS: handleSendSms,
   SEND_CAMPAIGN: handleSendCampaign,
+  ABANDONED_CART_FOLLOWUP: handleAbandonedFollowUp,
   COD_OTP_EXPIRE: handleCodOtpExpire,
 };
 

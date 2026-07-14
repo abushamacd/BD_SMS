@@ -8,6 +8,7 @@ export const STATUS_TONE = {
   PAUSED: "warning",
   COMPLETED: "success",
   CANCELLED: "neutral",
+  FAILED: "critical",
 };
 
 export const STATUS_LABEL = {
@@ -17,6 +18,7 @@ export const STATUS_LABEL = {
   PAUSED: "Paused",
   COMPLETED: "Completed",
   CANCELLED: "Cancelled",
+  FAILED: "Could not run",
 };
 
 export const RECIPIENT_TONE = {

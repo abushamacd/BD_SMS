@@ -1,19 +1,19 @@
-// Gateway presets for the Phase 1 UI.
+// The provider registry that drives the gateway form. Isomorphic — the page
+// renders it and the server validates against it, so the fields a merchant can
+// fill in and the fields we require cannot drift apart.
 //
-// Each preset declares the credentials a merchant must supply. The exact
-// request shape each provider expects (parameter names, GET vs POST, response
-// codes) lives in the adapter, which is built in Phase 2 — that is where each
-// provider's live API is verified. This file only drives the form.
+// `value` is the GatewayProvider enum in the Prisma schema. The request shape
+// each provider actually expects lives in its adapter.
 
 export const GATEWAY_MODES = [
   {
-    value: "default",
+    value: "DEFAULT",
     label: "Use our gateway",
     details:
       "We deliver your messages and you buy credits from us. No monthly fee — you only pay for what you send.",
   },
   {
-    value: "personal",
+    value: "PERSONAL",
     label: "Use my own gateway",
     details:
       "Bring your own SMS provider and buy credits from them. Requires an app subscription.",
@@ -22,7 +22,7 @@ export const GATEWAY_MODES = [
 
 export const PROVIDERS = [
   {
-    value: "bulksmsbd",
+    value: "BULKSMSBD",
     label: "BulkSMSBD",
     url: "https://bulksmsbd.net/api/smsapi",
     urlEditable: false,
@@ -36,7 +36,7 @@ export const PROVIDERS = [
     ],
   },
   {
-    value: "mimsms",
+    value: "MIMSMS",
     label: "MiMSMS",
     url: "https://api.mimsms.com/api/SmsSending/SMS",
     urlEditable: false,
@@ -47,7 +47,7 @@ export const PROVIDERS = [
     ],
   },
   {
-    value: "sslwireless",
+    value: "SSLWIRELESS",
     label: "SSL Wireless",
     url: "https://smsplus.sslwireless.com/api/v3/send-sms",
     urlEditable: false,
@@ -57,7 +57,7 @@ export const PROVIDERS = [
     ],
   },
   {
-    value: "generic",
+    value: "GENERIC",
     label: "Other provider (generic HTTP)",
     url: "",
     urlEditable: true,
@@ -73,24 +73,19 @@ export const HTTP_METHODS = [
   { value: "POST", label: "POST" },
 ];
 
-export const gateway = {
-  mode: "default",
-  provider: "bulksmsbd",
-  apiKey: "",
-  username: "",
-  senderId: "",
-  url: "",
-  method: "GET",
-  // Generic providers get a URL template. The adapter substitutes these before
-  // calling the provider.
-  urlTemplate:
-    "https://provider.example/send?api_key={{api_key}}&to={{phone}}&from={{sender_id}}&text={{message}}",
-};
+export const DEFAULT_URL_TEMPLATE =
+  "https://provider.example/send?api_key={{api_key}}&to={{phone}}&from={{sender_id}}&text={{message}}";
 
-// Shown after a "Test connection" so the merchant sees a result rather than a
-// spinner that resolves into nothing. Phase 2 replaces this with a real call.
-export const SAMPLE_TEST_RESULT = {
-  ok: true,
-  message: "Connected. Test SMS accepted by the gateway.",
-  balance: "12,480 credits at BulkSMSBD",
-};
+/** The variables a generic URL template must carry, or nothing can be sent. */
+export const REQUIRED_TEMPLATE_VARIABLES = ["phone", "message"];
+
+export function getProvider(value) {
+  return PROVIDERS.find((provider) => provider.value === value) ?? PROVIDERS[0];
+}
+
+/** Which of this provider's fields are secret — those are never sent to the browser. */
+export function secretKeys(provider) {
+  return getProvider(provider)
+    .fields.filter((field) => field.secret)
+    .map((field) => field.key);
+}

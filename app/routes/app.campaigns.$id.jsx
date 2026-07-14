@@ -38,6 +38,7 @@ export const loader = async ({ request, params }) => {
       name: campaign.name,
       body: campaign.body,
       status: campaign.status,
+      failureReason: campaign.failureReason,
       segment: describeSegment(campaign.segment),
       recipients: campaign.recipientCount,
       sent: campaign.sentCount,
@@ -103,8 +104,11 @@ export default function CampaignDetail() {
   const isSending = campaign.status === "SENDING";
   const isPaused = campaign.status === "PAUSED";
   const isScheduled = campaign.status === "SCHEDULED";
+  const isFailed = campaign.status === "FAILED";
   const isFinished =
-    campaign.status === "COMPLETED" || campaign.status === "CANCELLED";
+    campaign.status === "COMPLETED" ||
+    campaign.status === "CANCELLED" ||
+    isFailed;
   const canCancel = isSending || isPaused || isScheduled;
 
   // Live progress: a sending campaign updates itself so the merchant can watch it
@@ -162,6 +166,19 @@ export default function CampaignDetail() {
         >
           Cancel campaign
         </s-button>
+      ) : null}
+
+      {isFailed ? (
+        <s-banner tone="critical" heading="This campaign could not run">
+          <s-paragraph>
+            {campaign.failureReason ??
+              "The campaign could not be started. Nothing was sent and no credits were spent."}
+          </s-paragraph>
+          <s-paragraph>
+            Nothing was sent and no credits were spent. Fix the cause, then create
+            the campaign again.
+          </s-paragraph>
+        </s-banner>
       ) : null}
 
       {isPaused ? (

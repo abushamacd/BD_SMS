@@ -2,6 +2,7 @@ import db from "../../db.server.js";
 import { enqueue } from "../queue/queue.server.js";
 import { getSettings, getTemplate } from "../settings.server.js";
 import { renderMessage } from "../templates.server.js";
+import { markRecoveredByOrder } from "../checkouts/abandoned.server.js";
 import { startCodVerification } from "./cod-otp.server.js";
 import {
   extractPhone,
@@ -129,6 +130,11 @@ async function queueOrderSms({
 export async function onOrderCreated({ shop, admin, order }) {
   const results = {};
 
+  // First: if this order came from a checkout we were chasing, stop chasing it.
+  // Done before anything else so a slow SMS path cannot let a reminder slip out
+  // to someone who has just paid.
+  results.recovered = await markRecoveredByOrder({ shop, order });
+
   results.newOrder = await queueOrderSms({
     shop,
     admin,
@@ -144,7 +150,9 @@ export async function onOrderCreated({ shop, admin, order }) {
 
   return {
     queued: Boolean(results.newOrder.queued || results.codOtp?.queued),
+    recovered: results.recovered.recovered,
     reason: [
+      results.recovered.recovered && "recovered an abandoned checkout",
       results.newOrder.reason && `new order: ${results.newOrder.reason}`,
       results.codOtp?.reason && `cod otp: ${results.codOtp.reason}`,
     ]

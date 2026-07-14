@@ -27,9 +27,11 @@ export async function handleOrderWebhook(request, handler) {
 
     const result = await handler({ shop, admin, payload });
 
+    const acted = result?.queued || result?.scheduled || result?.recovered;
+
     console.log(
       `[webhook] ${topic} for ${shop}: ${
-        result?.queued ? "queued" : `no SMS (${result?.reason ?? "unknown"})`
+        acted ? "actioned" : `no action (${result?.reason ?? "nothing to do"})`
       }`,
     );
   } catch (error) {

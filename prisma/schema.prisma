@@ -360,6 +360,11 @@ enum CampaignStatus {
   PAUSED
   COMPLETED
   CANCELLED
+  // Could not run at all — e.g. Shopify refused the audience query because the
+  // app is not approved for protected customer data. Distinct from a campaign
+  // that ran and had failures: this one never sent anything, and retrying it
+  // changes nothing until the merchant fixes the cause.
+  FAILED
 }
 
 model Campaign {
@@ -380,6 +385,10 @@ model Campaign {
   deliveredCount Int @default(0)
   failedCount    Int @default(0)
   creditsUsed    Int @default(0)
+
+  // Why a FAILED campaign failed, in words the merchant can act on. A status with
+  // no reason just moves the question from "what happened" to "why".
+  failureReason String? @db.Text
 
   scheduledFor DateTime?
   startedAt    DateTime?

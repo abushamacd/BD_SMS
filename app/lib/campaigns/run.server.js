@@ -21,6 +21,19 @@ const BATCH_SIZE = 50;
 // confirmation must never queue behind a marketing blast.
 const CAMPAIGN_PRIORITY = -10;
 
+/**
+ * The campaign cannot run and no retry will change that. The campaign row has
+ * already been marked FAILED with the reason; this tells the queue not to
+ * retry the job.
+ */
+export class CampaignFailed extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "CampaignFailed";
+    this.retryable = false;
+  }
+}
+
 /** Start (or restart) a campaign by putting it on the queue. */
 export async function startCampaign(shop, campaignId, runAt = new Date()) {
   await enqueue({
@@ -41,8 +54,27 @@ export async function startCampaign(shop, campaignId, runAt = new Date()) {
  * opts out between scheduling and sending is never messaged. That is the promise
  * the scheduling UI makes.
  */
-async function buildRecipients(campaign, admin) {
-  const result = await buildAudience(admin, campaign.segment);
+export async function buildRecipients(campaign, admin) {
+  let result;
+
+  try {
+    result = await buildAudience(admin, campaign.segment);
+  } catch (error) {
+    // Shopify refused the audience query because the app is not approved for
+    // protected customer data. Retrying cannot fix that — only the app owner
+    // can, in the Partner Dashboard — so the campaign is failed with the reason
+    // rather than left in SENDING while its job quietly retries and gets buried.
+    if (error.protectedData) {
+      await db.campaign.update({
+        where: { id: campaign.id },
+        data: { status: "FAILED", failureReason: error.message },
+      });
+
+      throw new CampaignFailed(error.message);
+    }
+
+    throw error;
+  }
 
   if (result.recipients.length > 0) {
     // Skip duplicates rather than fail the whole batch: the unique index on

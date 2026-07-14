@@ -49,6 +49,17 @@ api_version = "2026-10"
   uri = "/webhooks/fulfillments/update"
   topics = [ "fulfillments/update" ]
 
+  # Abandoned checkout recovery. checkouts/update fires repeatedly while the
+  # customer is still filling in the form, which is how we know they are still
+  # active and the reminder should wait.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/checkouts/create"
+  topics = [ "checkouts/create" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/checkouts/update"
+  topics = [ "checkouts/update" ]
+
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
 

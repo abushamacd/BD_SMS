@@ -1,46 +1,112 @@
-import { useState } from "react";
-import { useLoaderData } from "react-router";
+import { useEffect, useState } from "react";
+import { useFetcher, useLoaderData } from "react-router";
+import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { SettingsNav } from "../components/SettingsNav";
 import {
+  DEFAULT_URL_TEMPLATE,
   GATEWAY_MODES,
   HTTP_METHODS,
   PROVIDERS,
-  SAMPLE_TEST_RESULT,
-  gateway,
-} from "../mock/gateways";
+  getProvider,
+} from "../lib/gateways/providers";
+import {
+  loadGatewaySettings,
+  saveGatewaySettings,
+  testGatewayConnection,
+} from "../lib/gateways/settings.server";
 
 export const loader = async ({ request }) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
 
-  // Phase 1: mock data. Phase 2 loads the real Gateway record (credentials
-  // decrypted only at send time, never returned to the browser).
-  return { gateway, providers: PROVIDERS };
+  // Credentials are decrypted only in the send path. What comes back here is a
+  // masked hint like "••••zJ31" — never the key itself.
+  return await loadGatewaySettings(session.shop);
+};
+
+export const action = async ({ request }) => {
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
+
+  const form = await request.formData();
+
+  if (form.get("intent") === "test") {
+    const result = await testGatewayConnection(shop, form);
+
+    return { intent: "test", ...result };
+  }
+
+  const result = await saveGatewaySettings(shop, form);
+
+  return { intent: "save", ...result };
 };
 
 export default function GatewaySettings() {
   const data = useLoaderData();
-  const [form, setForm] = useState(data.gateway);
-  const [testResult, setTestResult] = useState(null);
+  const saveFetcher = useFetcher();
+  const testFetcher = useFetcher();
+  const shopify = useAppBridge();
 
-  const isPersonal = form.mode === "personal";
-  const provider = data.providers.find((entry) => entry.value === form.provider);
+  const [form, setForm] = useState({
+    mode: data.mode,
+    provider: data.provider,
+    senderId: data.senderId,
+    username: data.username,
+    apiKey: "",
+    urlTemplate: data.urlTemplate || DEFAULT_URL_TEMPLATE,
+    httpMethod: data.httpMethod,
+  });
+
+  const saveResult = saveFetcher.data?.intent === "save" ? saveFetcher.data : null;
+  const testResult = testFetcher.data?.intent === "test" ? testFetcher.data : null;
+
+  useEffect(() => {
+    if (saveResult?.ok) shopify.toast.show("Gateway settings saved");
+  }, [saveResult, shopify]);
+
+  const isPersonal = form.mode === "PERSONAL";
+  const provider = getProvider(form.provider);
 
   const update = (patch) => setForm((prev) => ({ ...prev, ...patch }));
 
-  // Phase 2 makes this a real request to the provider. Showing a fake success
-  // would be worse than showing nothing, so it says what it is.
-  const runTest = () => setTestResult(SAMPLE_TEST_RESULT);
+  const body = () => {
+    const payload = new FormData();
+    payload.set("mode", form.mode);
+    payload.set("provider", form.provider);
+    payload.set("senderId", form.senderId);
+    payload.set("username", form.username);
+    payload.set("apiKey", form.apiKey);
+    payload.set("urlTemplate", form.urlTemplate);
+    payload.set("httpMethod", form.httpMethod);
+    return payload;
+  };
 
-  const missingFields = isPersonal
-    ? provider.fields.filter((field) => !form[field.key]?.trim()).length
-    : 0;
+  const save = () => saveFetcher.submit(body(), { method: "post" });
 
-  const canTest = isPersonal && missingFields === 0;
+  const runTest = () => {
+    const payload = body();
+    payload.set("intent", "test");
+    testFetcher.submit(payload, { method: "post" });
+  };
+
+  // A saved secret does not have to be retyped — the field is blank because we
+  // will not send the key back to the browser, not because it is missing.
+  const isFilled = (field) =>
+    field.key === "senderId"
+      ? Boolean(form.senderId.trim())
+      : Boolean(form[field.key]?.trim() || data.secretHints[field.key]);
+
+  const missing = isPersonal ? provider.fields.filter((f) => !isFilled(f)) : [];
+  const canTest = isPersonal && missing.length === 0;
 
   return (
     <s-page heading="SMS gateway">
-      <s-button slot="primary-action" variant="primary">
+      <s-button
+        slot="primary-action"
+        variant="primary"
+        onClick={save}
+        {...(saveFetcher.state !== "idle" ? { loading: true } : {})}
+      >
         Save
       </s-button>
 
@@ -48,12 +114,15 @@ export default function GatewaySettings() {
         <SettingsNav current="/app/settings/gateway" />
       </s-section>
 
-      <s-banner tone="info" heading="Preview mode">
-        <s-paragraph>
-          Gateway settings are not saved and Test connection does not call the
-          provider yet — both arrive in Phase 2.
-        </s-paragraph>
-      </s-banner>
+      {saveResult && !saveResult.ok ? (
+        <s-banner tone="critical" heading="These settings could not be saved">
+          <s-unordered-list>
+            {saveResult.errors.map((error) => (
+              <s-list-item key={error}>{error}</s-list-item>
+            ))}
+          </s-unordered-list>
+        </s-banner>
+      ) : null}
 
       <s-section heading="How you send">
         <s-stack direction="block" gap="base">
@@ -75,7 +144,8 @@ export default function GatewaySettings() {
             <s-banner tone="warning" heading="A subscription is required">
               <s-paragraph>
                 Using your own gateway needs an active app subscription. Your SMS
-                credits are then bought from your provider, not from us.
+                credits are then bought from your provider, not from us — nothing
+                is debited from your credit balance here.
               </s-paragraph>
               <s-button slot="primary-action" href="/app/billing">
                 View plans
@@ -102,10 +172,13 @@ export default function GatewaySettings() {
               label="SMS provider"
               value={form.provider}
               onChange={(event) =>
-                update({ provider: event.target.value, url: "" })
+                // Credentials belong to the provider they were issued by, so
+                // switching provider clears the typed key rather than carrying a
+                // BulkSMSBD key over to an SSL Wireless account.
+                update({ provider: event.target.value, apiKey: "", username: "" })
               }
             >
-              {data.providers.map((entry) => (
+              {PROVIDERS.map((entry) => (
                 <s-option key={entry.value} value={entry.value}>
                   {entry.label}
                 </s-option>
@@ -116,8 +189,8 @@ export default function GatewaySettings() {
               <s-stack direction="block" gap="base">
                 <s-select
                   label="Request method"
-                  value={form.method}
-                  onChange={(event) => update({ method: event.target.value })}
+                  value={form.httpMethod}
+                  onChange={(event) => update({ httpMethod: event.target.value })}
                 >
                   {HTTP_METHODS.map((method) => (
                     <s-option key={method.value} value={method.value}>
@@ -130,7 +203,7 @@ export default function GatewaySettings() {
                   label="Request URL template"
                   rows={3}
                   value={form.urlTemplate}
-                  details="Use {{api_key}}, {{sender_id}}, {{phone}} and {{message}} — we substitute them for each message."
+                  details="Use {{api_key}}, {{sender_id}}, {{phone}} and {{message}} — we substitute them for each message. The URL must be HTTPS and must not point at a private address."
                   onInput={(event) => update({ urlTemplate: event.target.value })}
                 />
               </s-stack>
@@ -145,13 +218,19 @@ export default function GatewaySettings() {
 
             {provider.fields.map((field) => {
               const Field = field.secret ? "s-password-field" : "s-text-field";
+              const hint = data.secretHints[field.key];
+
+              const details = field.secret && hint
+                ? `A key is already saved (${hint}). Leave this blank to keep it.`
+                : field.details;
 
               return (
                 <Field
                   key={field.key}
                   label={field.label}
                   value={form[field.key] ?? ""}
-                  {...(field.details ? { details: field.details } : {})}
+                  {...(details ? { details } : {})}
+                  {...(field.secret && hint ? { placeholder: hint } : {})}
                   onInput={(event) => update({ [field.key]: event.target.value })}
                 />
               );
@@ -161,21 +240,29 @@ export default function GatewaySettings() {
               <s-paragraph>
                 API keys are encrypted before they are stored and are only
                 decrypted at the moment a message is sent. They are never shown
-                back to you or to us in plain text.
+                back to you or to us in plain text — which is why the field above
+                is blank even when a key is saved.
               </s-paragraph>
             </s-banner>
 
             <s-stack direction="inline" gap="base" alignItems="center">
               <s-button
                 onClick={runTest}
+                {...(testFetcher.state !== "idle" ? { loading: true } : {})}
                 {...(canTest ? {} : { disabled: true })}
               >
                 Test connection
               </s-button>
               {!canTest ? (
                 <s-text color="subdued">
-                  Fill in {missingFields} more{" "}
-                  {missingFields === 1 ? "field" : "fields"} to test.
+                  Fill in {missing.length} more{" "}
+                  {missing.length === 1 ? "field" : "fields"} to test.
+                </s-text>
+              ) : null}
+              {!testResult && data.lastTest ? (
+                <s-text color="subdued">
+                  Last test{" "}
+                  {data.lastTest.ok ? "succeeded" : `failed: ${data.lastTest.error}`}
                 </s-text>
               ) : null}
             </s-stack>
@@ -188,6 +275,12 @@ export default function GatewaySettings() {
                 <s-paragraph>{testResult.message}</s-paragraph>
                 {testResult.balance ? (
                   <s-paragraph>Provider balance: {testResult.balance}</s-paragraph>
+                ) : null}
+                {testResult.ok ? (
+                  <s-paragraph>
+                    This checked your credentials. It did not send an SMS — use
+                    Send test SMS on the Settings page for that.
+                  </s-paragraph>
                 ) : null}
               </s-banner>
             ) : null}
