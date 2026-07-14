@@ -1,3 +1,4 @@
+import { runCampaignBatch } from "../campaigns/run.server.js";
 import { expireCodOtp } from "../orders/cod-otp.server.js";
 import { SendOutcome, retrySend, sendSms } from "../sms/send.server.js";
 import { updatePayload } from "./queue.server.js";
@@ -68,10 +69,33 @@ async function handleCodOtpExpire(job) {
   await expireCodOtp(job.payload);
 }
 
-// Phases 4-6 register their handlers here. A job type with no handler is buried
+/**
+ * SEND_CAMPAIGN — one batch of a campaign, then re-queue itself.
+ *
+ * Not done: fanning out one job per recipient. This keeps the queue small, makes
+ * pause/cancel a status check, and stops a 10,000-message campaign burying every
+ * OTP behind it.
+ */
+async function handleSendCampaign(job) {
+  const result = await runCampaignBatch(job.payload);
+
+  if (result.done) {
+    if (result.reason) {
+      console.log(`[campaign ${job.payload.campaignId}] ${result.reason}`);
+    }
+    return;
+  }
+
+  // More work to do — put it back rather than looping inside one job, so the
+  // worker can interleave transactional messages between batches.
+  return { reschedule: result.rescheduleTo ?? new Date(), reason: result.reason };
+}
+
+// Phases 5-6 register their handlers here. A job type with no handler is buried
 // rather than retried forever.
 export const HANDLERS = {
   SEND_SMS: handleSendSms,
+  SEND_CAMPAIGN: handleSendCampaign,
   COD_OTP_EXPIRE: handleCodOtpExpire,
 };
 

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { getHandler } from "./handlers.server.js";
 import { claim, complete, fail, reclaimStale, releaseAll, reschedule } from "./queue.server.js";
+import { ratePerSecond, takeSendToken } from "./rate-limit.server.js";
 
 // The worker.
 //
@@ -16,43 +17,23 @@ import { claim, complete, fail, reclaimStale, releaseAll, reschedule } from "./q
 
 const POLL_INTERVAL_MS = Number(process.env.WORKER_POLL_MS ?? 2000);
 const CONCURRENCY = Number(process.env.WORKER_CONCURRENCY ?? 5);
-const RATE_PER_SECOND = Number(process.env.SMS_RATE_PER_SECOND ?? 10);
 const RECLAIM_EVERY_MS = 60_000;
 
-/** Token bucket. Refills continuously; a send waits for a token. */
-function createRateLimiter(perSecond) {
-  let tokens = perSecond;
-  let last = Date.now();
-
-  return async function take() {
-    for (;;) {
-      const now = Date.now();
-      tokens = Math.min(perSecond, tokens + ((now - last) / 1000) * perSecond);
-      last = now;
-
-      if (tokens >= 1) {
-        tokens -= 1;
-        return;
-      }
-
-      const waitMs = Math.ceil(((1 - tokens) / perSecond) * 1000);
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
-    }
-  };
-}
+// Job types that send exactly one message, so the worker can take their token
+// for them. SEND_CAMPAIGN sends many and takes its own tokens per message —
+// taking one here would rate-limit the campaign to one *batch* per token.
+const ONE_MESSAGE_PER_JOB = new Set(["SEND_SMS"]);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function createWorker({ workerId = `worker-${randomUUID().slice(0, 8)}` } = {}) {
-  const takeToken = createRateLimiter(RATE_PER_SECOND);
-
   let running = false;
   let stopping = false;
   const inFlight = new Set();
 
   async function runJob(job) {
     try {
-      await takeToken();
+      if (ONE_MESSAGE_PER_JOB.has(job.type)) await takeSendToken();
 
       const handler = getHandler(job.type);
       const outcome = await handler(job);
@@ -95,7 +76,7 @@ export function createWorker({ workerId = `worker-${randomUUID().slice(0, 8)}` }
     let lastReclaim = 0;
 
     console.log(
-      `[${workerId}] started — concurrency ${CONCURRENCY}, ${RATE_PER_SECOND} SMS/sec, polling every ${POLL_INTERVAL_MS}ms`,
+      `[${workerId}] started — concurrency ${CONCURRENCY}, ${ratePerSecond} SMS/sec, polling every ${POLL_INTERVAL_MS}ms`,
     );
 
     while (!stopping) {
