@@ -57,6 +57,10 @@ model ShopSettings {
   id   String @id @default(cuid())
   shop String @unique
 
+  // The storefront's display name, for {{shop_name}}. Not present in any webhook
+  // payload, so it is fetched from the Admin API and cached here.
+  shopName String?
+
   // --- Credits -------------------------------------------------------------
   // The authoritative balance. Debited with a conditional update
   // (`WHERE creditBalance >= cost`) so two concurrent sends can never both
