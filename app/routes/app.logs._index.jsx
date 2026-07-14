@@ -1,14 +1,45 @@
-import { useMemo, useState } from "react";
-import { useLoaderData } from "react-router";
+import { useEffect, useState } from "react";
+import { useFetcher, useLoaderData, useSearchParams } from "react-router";
 import { authenticate } from "../shopify.server";
 import { downloadCsv, toCsv } from "../lib/csv";
-import { STATUSES, STATUS_TONE, TYPES, TYPE_LABEL, logs } from "../mock/logs";
+import { PAGE_SIZE, STATUSES, STATUS_TONE, TYPES, TYPE_LABEL } from "../lib/logs";
+import { queryLogs } from "../lib/logs.server";
+import { formatBdPhone } from "../lib/phone";
 
 export const loader = async ({ request }) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
 
-  // Phase 1: mock data. Phase 2 loads real SmsLog rows.
-  return { logs };
+  const url = new URL(request.url);
+  const page = Math.max(1, Number(url.searchParams.get("page") ?? 1));
+
+  // Filtering and paging happen in MySQL, not the browser. A merchant with
+  // 80,000 log rows cannot have them all shipped to the page.
+  const result = await queryLogs(session.shop, url.searchParams, { page });
+
+  return {
+    total: result.total,
+    credits: result.credits,
+    failed: result.failed,
+    page: result.page,
+    pages: result.pages,
+    rows: result.rows.map((row) => ({
+      id: row.id,
+      date: row.createdAt.toISOString().slice(0, 10),
+      time: row.createdAt.toLocaleTimeString("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+      }),
+      name: row.customerName ?? "Unknown",
+      phone: row.phone,
+      type: row.type,
+      message: row.body,
+      credits: row.credits,
+      charged: row.status === "SENT" || row.status === "DELIVERED",
+      status: row.status,
+      gateway: row.provider,
+      error: row.errorMessage,
+    })),
+  };
 };
 
 const CSV_COLUMNS = [
@@ -25,116 +56,110 @@ const CSV_COLUMNS = [
 
 export default function SmsLog() {
   const data = useLoaderData();
+  const [params, setParams] = useSearchParams();
+  const exporter = useFetcher();
 
-  const [search, setSearch] = useState("");
-  const [type, setType] = useState("all");
-  const [status, setStatus] = useState("all");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  const [search, setSearch] = useState(params.get("q") ?? "");
 
-  const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase();
+  const setParam = (key, value) => {
+    const next = new URLSearchParams(params);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    next.delete("page"); // a new filter starts at page 1
+    setParams(next);
+  };
 
-    return data.logs.filter((log) => {
-      if (type !== "all" && log.type !== type) return false;
-      if (status !== "all" && log.status !== status) return false;
-      if (from && log.date < from) return false;
-      if (to && log.date > to) return false;
-      if (
-        term &&
-        !log.phone.includes(term) &&
-        !log.name.toLowerCase().includes(term)
-      ) {
-        return false;
-      }
-      return true;
-    });
-  }, [data.logs, search, type, status, from, to]);
-
-  const creditsUsed = filtered.reduce((sum, log) => sum + log.credits, 0);
-  const failedCount = filtered.filter((log) => log.status === "failed").length;
-
-  const hasFilters =
-    search || type !== "all" || status !== "all" || from || to;
+  const goToPage = (page) => {
+    const next = new URLSearchParams(params);
+    next.set("page", String(page));
+    setParams(next);
+  };
 
   const clearFilters = () => {
     setSearch("");
-    setType("all");
-    setStatus("all");
-    setFrom("");
-    setTo("");
+    setParams(new URLSearchParams());
   };
 
+  const hasFilters = [...params.keys()].some((key) => key !== "page");
+
+  // The export must cover every matching row, not just the 50 on screen — so it
+  // is fetched from the server with the same filters rather than built from what
+  // this page happens to be showing.
   const exportCsv = () => {
-    const rows = filtered.map((log) => ({
-      ...log,
-      sentAt: `${log.date} ${log.time}`,
-      typeLabel: TYPE_LABEL[log.type],
-      error: log.error ?? "",
-    }));
-
-    downloadCsv(`bd-sms-log-${new Date().toISOString().slice(0, 10)}.csv`, toCsv(CSV_COLUMNS, rows));
+    const query = new URLSearchParams(params);
+    query.delete("page");
+    exporter.load(`/app/logs/export?${query.toString()}`);
   };
+
+  useEffect(() => {
+    if (exporter.state === "idle" && exporter.data?.rows?.length) {
+      downloadCsv(
+        `bd-sms-log-${new Date().toISOString().slice(0, 10)}.csv`,
+        toCsv(CSV_COLUMNS, exporter.data.rows),
+      );
+      // Clear it, or the same file downloads again on the next render.
+      exporter.data.rows = null;
+    }
+  }, [exporter.state, exporter.data]);
 
   return (
     <s-page heading="SMS Log">
       <s-button
         slot="primary-action"
         onClick={exportCsv}
-        {...(filtered.length === 0 ? { disabled: true } : {})}
+        {...(data.total === 0 ? { disabled: true } : {})}
+        {...(exporter.state !== "idle" ? { loading: true } : {})}
       >
-        Export {filtered.length > 0 ? `${filtered.length} rows` : ""} to CSV
+        Export {data.total > 0 ? `${data.total.toLocaleString()} rows` : ""} to CSV
       </s-button>
 
       <s-section heading="Filters">
         <s-stack direction="block" gap="base">
-          <s-grid
-            gridTemplateColumns="repeat(auto-fit, minmax(180px, 1fr))"
-            gap="base"
-          >
+          <s-grid gridTemplateColumns="repeat(auto-fit, minmax(180px, 1fr))" gap="base">
             <s-search-field
               label="Search"
               placeholder="Name or phone number"
               value={search}
               onInput={(event) => setSearch(event.target.value)}
+              onChange={(event) => setParam("q", event.target.value)}
             />
 
             <s-select
               label="Type"
-              value={type}
-              onChange={(event) => setType(event.target.value)}
+              value={params.get("type") ?? ""}
+              onChange={(event) => setParam("type", event.target.value)}
             >
-              <s-option value="all">All types</s-option>
-              {TYPES.map((option) => (
-                <s-option key={option.value} value={option.value}>
-                  {option.label}
+              <s-option value="">All types</s-option>
+              {TYPES.map((type) => (
+                <s-option key={type.value} value={type.value}>
+                  {type.label}
                 </s-option>
               ))}
             </s-select>
 
             <s-select
               label="Status"
-              value={status}
-              onChange={(event) => setStatus(event.target.value)}
+              value={params.get("status") ?? ""}
+              onChange={(event) => setParam("status", event.target.value)}
             >
-              <s-option value="all">All statuses</s-option>
-              {STATUSES.map((option) => (
-                <s-option key={option.value} value={option.value}>
-                  {option.label}
+              <s-option value="">All statuses</s-option>
+              {STATUSES.map((status) => (
+                <s-option key={status.value} value={status.value}>
+                  {status.label}
                 </s-option>
               ))}
             </s-select>
 
             <s-date-field
               label="From"
-              value={from}
-              onChange={(event) => setFrom(event.target.value)}
+              value={params.get("from") ?? ""}
+              onChange={(event) => setParam("from", event.target.value)}
             />
 
             <s-date-field
               label="To"
-              value={to}
-              onChange={(event) => setTo(event.target.value)}
+              value={params.get("to") ?? ""}
+              onChange={(event) => setParam("to", event.target.value)}
             />
           </s-grid>
 
@@ -146,11 +171,12 @@ export default function SmsLog() {
           >
             <s-stack direction="inline" gap="small" alignItems="center">
               <s-text color="subdued">
-                {filtered.length} of {data.logs.length} messages ·{" "}
-                {creditsUsed.toLocaleString()} credits
+                {data.total.toLocaleString()}{" "}
+                {data.total === 1 ? "message" : "messages"} ·{" "}
+                {data.credits.toLocaleString()} credits
               </s-text>
-              {failedCount > 0 ? (
-                <s-badge tone="critical">{failedCount} failed</s-badge>
+              {data.failed > 0 ? (
+                <s-badge tone="critical">{data.failed} failed</s-badge>
               ) : null}
             </s-stack>
 
@@ -162,57 +188,104 @@ export default function SmsLog() {
       </s-section>
 
       <s-section heading="Messages">
-        {filtered.length === 0 ? (
+        {data.rows.length === 0 ? (
           <s-stack direction="block" gap="base">
-            <s-paragraph>No messages match these filters.</s-paragraph>
-            <s-button onClick={clearFilters}>Clear filters</s-button>
+            <s-paragraph>
+              {hasFilters
+                ? "No messages match these filters."
+                : "No messages yet. Turn on an automation in Settings, or send one from Send SMS."}
+            </s-paragraph>
+            {hasFilters ? (
+              <s-button onClick={clearFilters}>Clear filters</s-button>
+            ) : null}
           </s-stack>
         ) : (
-          <s-table variant="auto">
-            <s-table-header-row>
-              <s-table-header>Date &amp; time</s-table-header>
-              <s-table-header>Receiver</s-table-header>
-              <s-table-header>Type</s-table-header>
-              <s-table-header>Message</s-table-header>
-              <s-table-header>Credits</s-table-header>
-              <s-table-header>Status</s-table-header>
-              <s-table-header>Gateway</s-table-header>
-            </s-table-header-row>
-            <s-table-body>
-              {filtered.map((log) => (
-                <s-table-row key={log.id}>
-                  <s-table-cell>
-                    <s-stack direction="block" gap="small-500">
-                      <s-text>{log.date}</s-text>
-                      <s-text color="subdued">{log.time}</s-text>
-                    </s-stack>
-                  </s-table-cell>
-                  <s-table-cell>
-                    <s-stack direction="block" gap="small-500">
-                      <s-text>{log.name}</s-text>
-                      <s-text color="subdued">{log.phone}</s-text>
-                    </s-stack>
-                  </s-table-cell>
-                  <s-table-cell>{TYPE_LABEL[log.type]}</s-table-cell>
-                  <s-table-cell>
-                    <s-text>{log.message}</s-text>
-                  </s-table-cell>
-                  <s-table-cell>{log.credits}</s-table-cell>
-                  <s-table-cell>
-                    <s-stack direction="block" gap="small-500">
-                      <s-badge tone={STATUS_TONE[log.status]}>{log.status}</s-badge>
-                      {log.error ? (
-                        <s-text color="subdued" tone="critical">
-                          {log.error}
-                        </s-text>
-                      ) : null}
-                    </s-stack>
-                  </s-table-cell>
-                  <s-table-cell>{log.gateway}</s-table-cell>
-                </s-table-row>
-              ))}
-            </s-table-body>
-          </s-table>
+          <s-stack direction="block" gap="base">
+            <s-table variant="auto">
+              <s-table-header-row>
+                <s-table-header>Date &amp; time</s-table-header>
+                <s-table-header>Receiver</s-table-header>
+                <s-table-header>Type</s-table-header>
+                <s-table-header>Message</s-table-header>
+                <s-table-header>Credits</s-table-header>
+                <s-table-header>Status</s-table-header>
+                <s-table-header>Gateway</s-table-header>
+              </s-table-header-row>
+              <s-table-body>
+                {data.rows.map((row) => (
+                  <s-table-row key={row.id}>
+                    <s-table-cell>
+                      <s-stack direction="block" gap="small-500">
+                        <s-text>{row.date}</s-text>
+                        <s-text color="subdued">{row.time}</s-text>
+                      </s-stack>
+                    </s-table-cell>
+                    <s-table-cell>
+                      <s-stack direction="block" gap="small-500">
+                        <s-text>{row.name}</s-text>
+                        <s-text color="subdued">{formatBdPhone(row.phone)}</s-text>
+                      </s-stack>
+                    </s-table-cell>
+                    <s-table-cell>{TYPE_LABEL[row.type] ?? row.type}</s-table-cell>
+                    <s-table-cell>
+                      <s-text>{row.message}</s-text>
+                    </s-table-cell>
+                    <s-table-cell>
+                      {/* A skipped or failed message was never charged. Showing
+                          its would-be price in the Credits column reads as a
+                          charge the merchant did not incur. */}
+                      {row.charged ? (
+                        row.credits
+                      ) : (
+                        <s-text color="subdued">—</s-text>
+                      )}
+                    </s-table-cell>
+                    <s-table-cell>
+                      <s-stack direction="block" gap="small-500">
+                        <s-badge tone={STATUS_TONE[row.status]}>{row.status}</s-badge>
+                        {row.error ? (
+                          <s-text color="subdued" tone="critical">
+                            {row.error}
+                          </s-text>
+                        ) : null}
+                      </s-stack>
+                    </s-table-cell>
+                    <s-table-cell>{row.gateway}</s-table-cell>
+                  </s-table-row>
+                ))}
+              </s-table-body>
+            </s-table>
+
+            {data.pages > 1 ? (
+              <s-stack
+                direction="inline"
+                gap="base"
+                alignItems="center"
+                justifyContent="center"
+              >
+                <s-button
+                  {...(data.page <= 1 ? { disabled: true } : {})}
+                  onClick={() => goToPage(data.page - 1)}
+                >
+                  Previous
+                </s-button>
+                <s-text color="subdued">
+                  Page {data.page} of {data.pages}
+                </s-text>
+                <s-button
+                  {...(data.page >= data.pages ? { disabled: true } : {})}
+                  onClick={() => goToPage(data.page + 1)}
+                >
+                  Next
+                </s-button>
+              </s-stack>
+            ) : null}
+
+            <s-text color="subdued">
+              Showing {data.rows.length} of {data.total.toLocaleString()} ·{" "}
+              {PAGE_SIZE} per page
+            </s-text>
+          </s-stack>
         )}
       </s-section>
     </s-page>

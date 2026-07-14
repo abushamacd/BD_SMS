@@ -19,6 +19,17 @@ const shopify = shopifyApp({
   future: {
     expiringOfflineAccessTokens: true,
   },
+  hooks: {
+    // Give a newly installed shop its settings row and its default templates —
+    // every automation switched OFF. Without this the first page load of a fresh
+    // install would have no templates to show.
+    afterAuth: async ({ session }) => {
+      const { ensureTemplates, getSettings } = await import("./lib/settings.server.js");
+
+      await getSettings(session.shop);
+      await ensureTemplates(session.shop);
+    },
+  },
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
     : {}),

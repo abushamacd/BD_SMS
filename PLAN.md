@@ -14,7 +14,7 @@ Shopify SMS marketing & automation app for Bangladesh.
 2. Strip the template demo: delete `app.additional.jsx`, the product-generator code in `app._index.jsx`, and the demo metafield/metaobject blocks in `shopify.app.toml`.
 3. Set real access scopes: `read_orders`, `write_orders` (COD order tagging), `read_fulfillments`, `read_customers`, `read_checkouts`, `read_products`.
 4. `.env` for gateway keys + encryption secret.
-5. **Parallel admin task:** apply for **Protected Customer Data** access (Level 2) in the Partner Dashboard — required to read customer phone numbers in production. Approval comes *after* review, so submit early and keep building.
+5. **Parallel admin task:** apply for **Protected Customer Data** access (Level 2) in the Partner Dashboard — required to read customer phone numbers in production. Approval comes _after_ review, so submit early and keep building.
    → Step-by-step guide with copy-paste justifications: [`docs/protected-customer-data.md`](docs/protected-customer-data.md)
 
 ---
@@ -24,9 +24,11 @@ Shopify SMS marketing & automation app for Bangladesh.
 Every page built with Polaris web components, fed by hardcoded mock data so the whole app is clickable and reviewable before any backend exists.
 
 ### 1.1 App shell
+
 Nav: Dashboard · Send SMS · Campaigns · Abandoned Cart · SMS Log · Settings · Billing
 
 ### 1.2 Dashboard
+
 - Credit balance card + low-balance warning
 - Stat tiles: SMS sent today / this month, delivery rate, credits spent
 - Recent SMS activity list
@@ -34,7 +36,9 @@ Nav: Dashboard · Send SMS · Campaigns · Abandoned Cart · SMS Log · Settings
 - Abandoned-cart recovery summary (sent → recovered → revenue)
 
 ### 1.3 Settings — feature toggles + templates
+
 One card per feature, each with an enable/disable switch and an editable message template:
+
 - New Order SMS
 - Order Fulfillment SMS
 - Order Shipment SMS
@@ -44,12 +48,14 @@ One card per feature, each with an enable/disable switch and an editable message
 - Abandoned Cart SMS
 
 Each template editor includes:
+
 - Variable inserter: `{{customer_name}}` `{{order_number}}` `{{order_total}}` `{{tracking_url}}` `{{shop_name}}` `{{otp_code}}` `{{recovery_url}}`
 - **Live credit counter** — English (GSM-7) = 160 chars/SMS, Bangla (Unicode) = **70 chars/SMS**. Shows character count, parts, and credits per send.
 - **Send test SMS** button
 - Global settings: sender ID, quiet hours (don't send 10pm–8am), default country code (+880)
 
 ### 1.4 Send SMS page
+
 - Customer picker (search + multi-select, with a "select all" filter by tag/order count)
 - Or paste/upload a raw phone number list
 - Message box with the same live credit counter
@@ -57,12 +63,14 @@ Each template editor includes:
 - Confirm & send screen
 
 ### 1.5 Campaigns
+
 - **List view:** name, status (draft/scheduled/sending/paused/completed), recipients, sent, delivered, credits used
 - **Create campaign:** name → audience segment (all customers / SMS-consented only / by tag / by order count / by last-order date) → message + credit preview → send now or schedule for later
 - **Campaign detail:** live progress bar, pause / resume / cancel, per-recipient delivery status
 - Consent notice: marketing SMS only goes to customers with SMS marketing consent
 
 ### 1.6 Abandoned Cart
+
 - List of abandoned checkouts: customer, phone, cart value, time abandoned, SMS status, recovered yes/no
 - Settings: delay before sending (e.g. 1h / 6h / 24h), up to 3 follow-up messages
 - Optional **discount code** attached to the recovery SMS (biggest lever on recovery rate)
@@ -70,22 +78,26 @@ Each template editor includes:
 - Recovery stats: sent / clicked / recovered / revenue
 
 ### 1.7 SMS Log
+
 - Table: date & time, receiver name, phone number, message body, type (order/campaign/OTP/abandoned/manual), credits used, status (queued/sent/delivered/failed), gateway
 - Filters: date range, type, status, phone search
 - Export to CSV
 - Failed messages show the gateway error reason
 
 ### 1.8 Billing
+
 - **Subscription page** — for merchants using their own SMS gateway. Plan cards, current plan, upgrade/cancel.
 - **Recharge page** — for merchants on the default gateway. Credit packages, purchase history, current balance, auto-recharge threshold.
 - Both go through the **Shopify Billing API** (required for App Store apps).
 
 ### 1.9 Gateway settings
+
 - Choose: Default gateway (buy credits from us) OR Personal gateway (subscription required)
 - Personal gateway config: preset picker (BulkSMSBD / MiMSMS / SSL Wireless / Generic HTTP) + API key, sender ID, URL template
 - "Test connection" button
 
 ### 1.10 Blacklist / opt-out
+
 - List of numbers that replied STOP or were manually blocked
 - Manual add/remove
 
@@ -108,8 +120,9 @@ The heart of the app — everything else depends on this.
 
 - Webhooks: `orders/create`, `orders/fulfilled`, `fulfillments/create`, `fulfillments/update`, `orders/cancelled`
 - Template rendering with real order/customer variables
-- **COD OTP flow** — Shopify checkout cannot be blocked, so this is a *post-order confirmation*:
+- **COD OTP flow** — Shopify checkout cannot be blocked, so this is a _post-order confirmation_:
   order placed with COD → send OTP/confirm-link SMS → customer confirms on a public page → order tagged `cod-confirmed`, otherwise `cod-unconfirmed`. Merchant ships only confirmed orders.
+- **UI wiring** — replacing the mock loaders on Settings, SMS Log and Dashboard with real data so you can finally see this working in the app.
 
 ---
 
@@ -140,13 +153,13 @@ The heart of the app — everything else depends on this.
 
 ---
 
-## Key constraints (do not design around these — design *for* them)
+## Key constraints (do not design around these — design _for_ them)
 
-| Constraint | Consequence |
-|---|---|
-| Shopify checkout cannot be blocked | COD OTP is post-order confirmation, not pre-checkout |
-| Carts have no phone number | v1 abandoned cart = abandoned *checkout* only |
-| App Store requires Shopify Billing | No direct bKash/Nagad payments in-app |
-| Phone = Protected Customer Data | Needs Level 2 approval or phones return null in production |
-| Bangla is Unicode | 70 chars per SMS part, not 160 — credit math must handle it |
-| Marketing SMS needs consent | Campaigns filter on `smsMarketingConsent`; transactional is exempt |
+| Constraint                         | Consequence                                                        |
+| ---------------------------------- | ------------------------------------------------------------------ |
+| Shopify checkout cannot be blocked | COD OTP is post-order confirmation, not pre-checkout               |
+| Carts have no phone number         | v1 abandoned cart = abandoned _checkout_ only                      |
+| App Store requires Shopify Billing | No direct bKash/Nagad payments in-app                              |
+| Phone = Protected Customer Data    | Needs Level 2 approval or phones return null in production         |
+| Bangla is Unicode                  | 70 chars per SMS part, not 160 — credit math must handle it        |
+| Marketing SMS needs consent        | Campaigns filter on `smsMarketingConsent`; transactional is exempt |

@@ -27,43 +27,11 @@ const FALLBACKS = {
   customer_name: "Customer",
 };
 
-export const TEMPLATE_VARIABLES = {
-  NEW_ORDER: ["customer_name", "order_number", "order_total", "shop_name"],
-  FULFILLMENT: ["customer_name", "order_number", "shop_name"],
-  SHIPMENT: [
-    "customer_name",
-    "order_number",
-    "tracking_url",
-    "tracking_number",
-    "shop_name",
-  ],
-  DELIVERY: ["customer_name", "order_number", "shop_name"],
-  CANCELLED: ["customer_name", "order_number", "shop_name"],
-  COD_OTP: [
-    "customer_name",
-    "order_number",
-    "order_total",
-    "otp_code",
-    "confirm_url",
-    "shop_name",
-  ],
-  ABANDONED_CART_1: ["customer_name", "cart_total", "recovery_url", "shop_name"],
-  ABANDONED_CART_2: [
-    "customer_name",
-    "cart_total",
-    "recovery_url",
-    "discount_code",
-    "shop_name",
-  ],
-  ABANDONED_CART_3: [
-    "customer_name",
-    "cart_total",
-    "recovery_url",
-    "discount_code",
-    "shop_name",
-  ],
-  CAMPAIGN: ["customer_name", "shop_name"],
-};
+// Single source of truth, shared with the Settings UI so the variable chips a
+// merchant can click are exactly the ones the server accepts.
+export { TEMPLATE_VARIABLES } from "./automations.js";
+
+import { TEMPLATE_VARIABLES } from "./automations.js";
 
 const PLACEHOLDER = /\{\{\s*(\w+)\s*\}\}/g;
 
