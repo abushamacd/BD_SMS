@@ -105,6 +105,60 @@ model ShopSettings {
   updatedAt DateTime @updatedAt
 }
 
+enum PurchaseKind {
+  CREDITS // one-off credit package (appPurchaseOneTimeCreate)
+  SUBSCRIPTION // monthly plan for merchants on their own gateway (appSubscriptionCreate)
+}
+
+enum PurchaseStatus {
+  PENDING // created; the merchant has not approved it yet
+  ACTIVE // approved and paid
+  DECLINED // the merchant refused it at the confirmation screen
+  EXPIRED // the confirmation link went stale
+  CANCELLED // an active subscription was cancelled
+}
+
+/// A charge we asked Shopify to make.
+///
+/// This exists to make crediting idempotent. Shopify tells us a purchase was
+/// approved by redirecting the merchant back to us, and a merchant who refreshes
+/// that page — or opens it twice — must not be granted the credits twice. The
+/// unique chargeId plus `creditedAt` is what guarantees one grant per charge.
+model Purchase {
+  id   String @id @default(cuid())
+  shop String
+
+  /// Shopify's AppPurchaseOneTime / AppSubscription GID. The idempotency key.
+  chargeId String @unique
+
+  kind   PurchaseKind
+  name   String
+  status PurchaseStatus @default(PENDING)
+
+  /// Which package or plan was bought, so a price change later cannot rewrite history.
+  packageId String?
+  planId    String?
+
+  /// Credits granted by this purchase. Zero for a subscription — those merchants
+  /// send through their own gateway and buy credits from their own provider.
+  credits Int @default(0)
+
+  amount   Decimal @db.Decimal(10, 2)
+  currency String  @default("USD")
+
+  /// A test charge costs nothing. It must never grant real credits in production.
+  test Boolean @default(false)
+
+  /// Set once, when the credits were actually added. The guard against double-crediting.
+  creditedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shop, createdAt])
+  @@index([shop, status])
+}
+
 enum CreditEntryType {
   PURCHASE // merchant bought credits
   SEND // spent on a message
