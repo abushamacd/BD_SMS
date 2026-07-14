@@ -105,6 +105,32 @@ model ShopSettings {
   updatedAt DateTime @updatedAt
 }
 
+/// A customers/data_request GDPR webhook.
+///
+/// Shopify tells us a customer has asked for their data; the merchant then has 30
+/// days to hand it over. A log line is not good enough — nobody is reading the
+/// logs 29 days later. So the export is compiled at the moment the webhook lands
+/// and stored here, ready to be given to the merchant.
+model DataRequest {
+  id   String @id @default(cuid())
+  shop String
+
+  /// Shopify's id for the request, so a redelivery does not create a second row.
+  requestId String @unique
+
+  customerId String?
+  phone      String?
+  email      String?
+
+  /// Everything we hold on this customer, compiled at request time.
+  data Json
+
+  deliveredAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([shop, createdAt])
+}
+
 enum PurchaseKind {
   CREDITS // one-off credit package (appPurchaseOneTimeCreate)
   SUBSCRIPTION // monthly plan for merchants on their own gateway (appSubscriptionCreate)

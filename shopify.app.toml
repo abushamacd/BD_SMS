@@ -71,6 +71,21 @@ api_version = "2026-10"
   uri = "/webhooks/app/purchases_one_time_update"
   topics = [ "app_purchases_one_time/update" ]
 
+  # Mandatory GDPR / privacy compliance. Shopify will not approve the app without
+  # these three, and they are declared with `compliance_topics` rather than
+  # `topics` — a subscription block takes one or the other, never both.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/data_request"
+  compliance_topics = [ "customers/data_request" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/redact"
+  compliance_topics = [ "customers/redact" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/shop/redact"
+  compliance_topics = [ "shop/redact" ]
+
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
 
