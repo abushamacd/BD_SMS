@@ -21,12 +21,17 @@ export const CREDIT_PACKAGES = [
   { id: "pkg_25k", credits: 25000, price: 150, popular: false, save: "25%" },
 ];
 
+// `monthlyLimit` is what the send path ENFORCES; `limit` is what the pricing card
+// SAYS. They live on the same object so they cannot drift apart — an app that
+// advertises "up to 5,000 SMS" and then happily sends 500,000 is not generous,
+// it is broken. null means genuinely unlimited.
 export const PLANS = [
   {
     id: "starter",
     name: "Starter",
     price: 9.99,
     limit: "Up to 5,000 SMS per month",
+    monthlyLimit: 5000,
     features: [
       "All order automations",
       "COD OTP verification",
@@ -39,6 +44,7 @@ export const PLANS = [
     name: "Growth",
     price: 19.99,
     limit: "Up to 25,000 SMS per month",
+    monthlyLimit: 25000,
     popular: true,
     features: [
       "Everything in Starter",
@@ -52,6 +58,7 @@ export const PLANS = [
     name: "Pro",
     price: 39.99,
     limit: "Unlimited SMS",
+    monthlyLimit: null,
     features: [
       "Everything in Growth",
       "Priority delivery queue",
@@ -85,4 +92,21 @@ export function chargeName(pkg) {
 
 export function planChargeName(plan) {
   return `BD SMS ${plan.name}`;
+}
+
+/**
+ * How many SMS parts this plan allows per month. null = unlimited.
+ *
+ * An unknown plan gets the SMALLEST limit, not none. If we cannot tell what a
+ * merchant is paying for, the safe failure is to under-serve them and have them
+ * complain — not to hand out an unlimited plan for free.
+ */
+export function planMonthlyLimit(planId) {
+  const plan = getPlan(planId);
+
+  // No recognisable plan means no allowance. A merchant whose plan we cannot
+  // identify has not demonstrably paid for anything.
+  if (!plan) return 0;
+
+  return plan.monthlyLimit;
 }

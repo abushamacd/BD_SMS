@@ -70,8 +70,26 @@ model ShopSettings {
   creditBalance Int @default(0)
 
   lowBalanceThreshold Int     @default(500)
+  // Warn the merchant when they drop below the threshold. Set when the warning
+  // goes out, cleared when they top up — so we nag once, not on every send.
+  lowBalanceNotifiedAt DateTime?
+  // Where to text the low-balance warning. The merchant's own number, not a
+  // customer's. Optional: the in-app banner shows regardless.
+  alertPhone           String?
+
   autoRechargeEnabled Boolean @default(false)
   autoRechargePackage String?
+  // Shopify's usage subscription: the merchant approves a monthly CAP once, and
+  // each recharge is billed against it with no further approval. Without this,
+  // auto-recharge is impossible — a one-off charge always needs them to click.
+  autoRechargeChargeId    String?
+  autoRechargeLineItemId  String?
+  autoRechargeCap         Decimal? @db.Decimal(10, 2)
+  // The lock. Claimed with a conditional update before charging, so two workers
+  // reacting to the same low balance cannot both buy a package.
+  autoRechargeInFlight    Boolean  @default(false)
+  autoRechargeFailedAt    DateTime?
+  autoRechargeError       String?  @db.Text
 
   // --- Sending -------------------------------------------------------------
   senderId    String?
@@ -100,6 +118,18 @@ model ShopSettings {
   subscriptionPlan    String?
   subscriptionChargeId String?
   subscriptionActive  Boolean     @default(false)
+  subscriptionPeriodEnd DateTime?
+
+  // The plan allowance, for merchants on their OWN gateway.
+  //
+  // These merchants spend no credits with us — they burn their own provider's
+  // balance — so `creditBalance` is not what limits them. What limits them is the
+  // plan they pay for ("up to 5,000 SMS per month"), and this is the counter that
+  // enforces it. Incremented with the same conditional update the credit debit
+  // uses, so two concurrent sends cannot both slip past the last message of the
+  // allowance.
+  periodUsage     Int       @default(0)
+  periodStartedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -132,8 +162,12 @@ model DataRequest {
 }
 
 enum PurchaseKind {
-  CREDITS // one-off credit package (appPurchaseOneTimeCreate)
+  CREDITS // one-off credit package (appPurchaseOneTimeCreate), or one auto-recharge (appUsageRecordCreate)
   SUBSCRIPTION // monthly plan for merchants on their own gateway (appSubscriptionCreate)
+  // The capped usage subscription that MAKES auto-recharge possible. The merchant
+  // approves a spending cap once; individual recharges are then charged against it
+  // without asking again. This row is the approval, not a charge.
+  AUTO_RECHARGE
 }
 
 enum PurchaseStatus {
@@ -252,6 +286,13 @@ model Gateway {
   lastTestOk   Boolean?
   lastTestError String?  @db.Text
 
+  // The balance AT THE PROVIDER, as they last reported it. This is the balance a
+  // personal-gateway merchant actually spends — we hold no credits for them — so
+  // it is the number they need to see. Cached: providers rate-limit balance
+  // checks, and it is a display value, never something we bill from.
+  lastBalance   String?
+  lastBalanceAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -305,6 +346,8 @@ enum SmsType {
   CAMPAIGN
   MANUAL
   TEST
+  // "Your credit balance is low." Sent to the MERCHANT, not a customer.
+  ALERT
 }
 
 enum SmsStatus {
@@ -388,6 +431,9 @@ enum JobType {
   SEND_CAMPAIGN // fans out into one SEND_SMS per recipient
   ABANDONED_CART_FOLLOWUP
   COD_OTP_EXPIRE
+  // The balance crossed the low-water mark: auto-recharge if the merchant has
+  // approved it, warn them if not.
+  LOW_BALANCE
   AUTO_RECHARGE
   RETENTION_PURGE
 }

@@ -174,6 +174,11 @@ export async function testGatewayConnection(shop, form) {
       lastTestedAt: new Date(),
       lastTestOk: result.ok,
       lastTestError: result.ok ? null : result.message,
+      // The balance at THEIR provider — the one they actually spend. Cached for
+      // display; we never bill from it.
+      ...(result.balance
+        ? { lastBalance: String(result.balance), lastBalanceAt: new Date() }
+        : {}),
     },
   });
 

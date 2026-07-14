@@ -1,4 +1,5 @@
 import db from "../../db.server.js";
+import { refundAllowance, spendAllowance } from "../billing/allowance.server.js";
 import { getAdapterForShop } from "../gateways/index.server.js";
 import { normalizeBdPhone } from "../phone.js";
 import { getSettings, isQuietHours, quietHoursEnd } from "../settings.server.js";
@@ -183,34 +184,30 @@ export async function sendSms({
     );
   }
 
-  // --- 3. Debit ----------------------------------------------------------
-  // Only in DEFAULT mode. A merchant on their own gateway buys credits from
-  // their provider and pays us a subscription — debiting them here would be
-  // charging twice for one message.
-  if (!usesOwnGateway) {
-    // Conditional update: the WHERE clause is the lock. Two concurrent sends
-    // cannot both pass `creditBalance >= cost` and drive the balance negative,
-    // because MySQL serialises the row update.
-    const debited = await db.shopSettings.updateMany({
-      where: { shop, creditBalance: { gte: segment.credits } },
-      data: { creditBalance: { decrement: segment.credits } },
-    });
+  // --- 3. Spend ----------------------------------------------------------
+  // Whatever this shop actually spends — purchased credits on our gateway, plan
+  // allowance on their own. Both are taken with a conditional update whose WHERE
+  // clause is the lock, so concurrent sends cannot both take the last one.
+  //
+  // Taken BEFORE the gateway call: send-then-charge gives away a free SMS on any
+  // crash in between.
+  const spend = await spendAllowance(settings, segment.credits);
 
-    if (debited.count === 0) {
-      return skip(
-        `Not enough credits — this message needs ${segment.credits}`,
-        "INSUFFICIENT_CREDITS",
-      );
-    }
+  if (!spend.ok) {
+    return skip(spend.reason, spend.code);
+  }
 
-    const after = await db.shopSettings.findUnique({ where: { shop } });
-
+  // The ledger is an account of money WE are holding. A merchant on their own
+  // gateway has none with us — their provider bills them — so writing them a
+  // `SEND` row for 0 credits would be inventing a statement about an account that
+  // does not exist.
+  if (spend.charged > 0) {
     await db.creditLedger.create({
       data: {
         shop,
         type: "SEND",
-        amount: -segment.credits,
-        balanceAfter: after.creditBalance,
+        amount: -spend.charged,
+        balanceAfter: spend.balanceAfter,
         description: `${type} to ${normalized.e164}`,
         smsLogId: log.id,
         campaignId,
@@ -223,7 +220,10 @@ export async function sendSms({
   try {
     adapter = await getAdapterForShop(shop);
   } catch (error) {
-    await refund(shop, log.id, segment.credits, usesOwnGateway, "Gateway not configured");
+    await refundAllowance(settings, segment.credits, {
+      smsLogId: log.id,
+      reason: "Gateway not configured",
+    });
     await db.smsLog.update({
       where: { id: log.id },
       data: {
@@ -265,8 +265,13 @@ export async function sendSms({
   }
 
   // --- 5. Refund ---------------------------------------------------------
-  // The gateway rejected it, so nothing was delivered and nothing is owed.
-  await refund(shop, log.id, segment.credits, usesOwnGateway, sendResult.errorMessage);
+  // The gateway rejected it, so nothing was delivered and nothing is owed. In
+  // BOTH modes: a message that never went out must not eat a plan allowance any
+  // more than it should eat credits.
+  await refundAllowance(settings, segment.credits, {
+    smsLogId: log.id,
+    reason: sendResult.errorMessage,
+  });
 
   await db.smsLog.update({
     where: { id: log.id },
@@ -281,29 +286,6 @@ export async function sendSms({
     smsLogId: log.id,
     reason: sendResult.errorMessage,
     retryable: sendResult.retryable,
-  });
-}
-
-/** Give the credits back. No-op for merchants on their own gateway. */
-async function refund(shop, smsLogId, credits, usesOwnGateway, reason) {
-  if (usesOwnGateway || credits <= 0) return;
-
-  await db.shopSettings.update({
-    where: { shop },
-    data: { creditBalance: { increment: credits } },
-  });
-
-  const after = await db.shopSettings.findUnique({ where: { shop } });
-
-  await db.creditLedger.create({
-    data: {
-      shop,
-      type: "REFUND",
-      amount: credits,
-      balanceAfter: after.creditBalance,
-      description: `Refund — not delivered: ${reason ?? "gateway rejected"}`,
-      smsLogId,
-    },
   });
 }
 

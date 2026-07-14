@@ -18,6 +18,12 @@ import {
   startCreditPurchase,
   startSubscription,
 } from "../lib/billing/shopify.server";
+import { usageThisPeriod } from "../lib/billing/allowance.server";
+import {
+  DEFAULT_CAP,
+  disableAutoRecharge,
+  enableAutoRecharge,
+} from "../lib/billing/autorecharge.server";
 import { getSettings } from "../lib/settings.server";
 
 const PURCHASE_TONE = {
@@ -58,20 +64,34 @@ export const loader = async ({ request }) => {
     reconcileError = "Could not check your latest payments with Shopify. Your balance may be out of date.";
   }
 
-  const [settings, purchases] = await Promise.all([
+  const [settings, purchases, usage, gateway] = await Promise.all([
     getSettings(shop),
     db.purchase.findMany({
       where: { shop },
       orderBy: { createdAt: "desc" },
       take: 20,
     }),
+    usageThisPeriod(shop),
+    db.gateway.findUnique({ where: { shop } }),
   ]);
 
   return {
     gatewayMode: settings.gatewayMode,
     balance: settings.creditBalance,
+    usage,
+    // The balance at the merchant's OWN provider. We hold no credits for them, so
+    // this is the number that actually limits their sending.
+    gatewayBalance: gateway?.lastBalance ?? null,
+    gatewayBalanceAt: gateway?.lastBalanceAt?.toISOString() ?? null,
     lowBalanceThreshold: settings.lowBalanceThreshold,
-    lowBalanceAlerts: settings.autoRechargeEnabled,
+    alertPhone: settings.alertPhone ?? "",
+    autoRecharge: {
+      enabled: settings.autoRechargeEnabled,
+      packageId: settings.autoRechargePackage ?? "pkg_5k",
+      cap: settings.autoRechargeCap ? Number(settings.autoRechargeCap) : DEFAULT_CAP,
+      failedAt: settings.autoRechargeFailedAt?.toISOString() ?? null,
+      error: settings.autoRechargeError,
+    },
     subscription: {
       active: settings.subscriptionActive,
       planId: settings.subscriptionPlan,
@@ -145,15 +165,30 @@ export const action = async ({ request }) => {
     await db.shopSettings.update({
       where: { shop },
       data: {
-        autoRechargeEnabled: form.get("lowBalanceAlerts") === "true",
-        lowBalanceThreshold: Math.max(
-          0,
-          Number(form.get("lowBalanceThreshold") ?? 500),
-        ),
+        lowBalanceThreshold: Math.max(0, Number(form.get("lowBalanceThreshold") ?? 500)),
+        alertPhone: String(form.get("alertPhone") ?? "").trim() || null,
       },
     });
 
     return { intent: "alerts", ok: true, message: "Saved." };
+  }
+
+  if (intent === "autorecharge-on") {
+    const result = await enableAutoRecharge(admin, shop, {
+      packageId: String(form.get("packageId")),
+      cap: Number(form.get("cap")),
+      returnUrl: billingReturnUrl(request),
+    });
+
+    return result.ok
+      ? { intent: "autorecharge-on", ok: true, confirmationUrl: result.confirmationUrl }
+      : { intent: "autorecharge-on", ok: false, message: result.error };
+  }
+
+  if (intent === "autorecharge-off") {
+    await disableAutoRecharge(admin, shop);
+
+    return { intent: "autorecharge-off", ok: true, message: "Auto-recharge turned off." };
   }
 
   return { ok: false, message: `Unknown action: ${intent}` };
@@ -172,17 +207,21 @@ function CreditsView({ data, charge, busy }) {
   const alerts = useFetcher();
 
   const [selected, setSelected] = useState("pkg_5k");
-  const [enabled, setEnabled] = useState(data.lowBalanceAlerts);
   const [threshold, setThreshold] = useState(String(data.lowBalanceThreshold));
+  const [alertPhone, setAlertPhone] = useState(data.alertPhone);
+  const [rechargePackage, setRechargePackage] = useState(data.autoRecharge.packageId);
+  const [cap, setCap] = useState(String(data.autoRecharge.cap));
 
   const pkg = getPackage(selected);
   const isLow = data.balance < data.lowBalanceThreshold;
+  const auto = data.autoRecharge;
+  const rechargePkg = getPackage(rechargePackage);
 
   const saveAlerts = () => {
     const form = new FormData();
     form.set("intent", "alerts");
-    form.set("lowBalanceAlerts", String(enabled));
     form.set("lowBalanceThreshold", threshold);
+    form.set("alertPhone", alertPhone);
     alerts.submit(form, { method: "post" });
   };
 
@@ -261,36 +300,22 @@ function CreditsView({ data, charge, busy }) {
         </s-stack>
       </s-section>
 
-      <s-section heading="Low balance alert">
+      <s-section heading="When your balance runs low">
         <s-stack direction="block" gap="base">
-          <s-switch
-            label="Warn me when my balance runs low"
-            details="Without this, order and OTP messages stop sending the moment you hit zero — usually at the worst possible time."
-            checked={enabled}
-            onChange={() => setEnabled((value) => !value)}
+          <s-number-field
+            label="Consider my balance low below"
+            value={threshold}
+            details="credits"
+            onInput={(event) => setThreshold(event.target.value)}
           />
 
-          {enabled ? (
-            <s-number-field
-              label="Warn me below"
-              value={threshold}
-              details="credits"
-              onInput={(event) => setThreshold(event.target.value)}
-            />
-          ) : null}
-
-          {/* Said plainly, because the obvious feature here is one Shopify does
-              not allow: a one-off charge ALWAYS needs the merchant to approve it
-              on Shopify's own confirmation screen, so no app can quietly buy
-              credits on their behalf. Promising otherwise would be a lie the
-              first empty balance would expose. */}
-          <s-banner tone="info" heading="Why credits cannot top up automatically">
-            <s-paragraph>
-              Shopify requires you to approve every one-off charge yourself, so no
-              app can buy credits on your behalf without asking. This alert is the
-              next best thing: it tells you before you run out.
-            </s-paragraph>
-          </s-banner>
+          <s-text-field
+            label="Text this number when I run low"
+            placeholder="01712345678"
+            value={alertPhone}
+            details="Your own number, not a customer's. The warning is free — we do not charge you a credit to tell you that you are out of credits."
+            onInput={(event) => setAlertPhone(event.target.value)}
+          />
 
           <s-stack direction="inline" gap="base">
             <s-button
@@ -300,6 +325,104 @@ function CreditsView({ data, charge, busy }) {
               Save
             </s-button>
           </s-stack>
+
+          <s-divider />
+
+          {auto.enabled ? (
+            <s-stack direction="block" gap="base">
+              <s-stack direction="inline" gap="small" alignItems="center">
+                <s-badge tone="success">Auto-recharge is on</s-badge>
+              </s-stack>
+
+              <s-paragraph>
+                When your balance drops below{" "}
+                {data.lowBalanceThreshold.toLocaleString()} credits, we
+                automatically buy{" "}
+                <s-text type="strong">
+                  {getPackage(auto.packageId)?.credits.toLocaleString()} credits
+                </s-text>{" "}
+                for {usd.format(getPackage(auto.packageId)?.price ?? 0)} — never
+                more than <s-text type="strong">{usd.format(auto.cap)}</s-text> a
+                month, the limit you approved.
+              </s-paragraph>
+
+              {auto.error ? (
+                <s-banner tone="critical" heading="The last automatic recharge failed">
+                  <s-paragraph>{auto.error}</s-paragraph>
+                  <s-paragraph>
+                    Nothing was charged. Your messages will stop when the balance
+                    runs out — buy credits above, or raise your monthly limit.
+                  </s-paragraph>
+                </s-banner>
+              ) : null}
+
+              <s-stack direction="inline" gap="base">
+                <s-button
+                  tone="critical"
+                  onClick={() => charge("autorecharge-off", {})}
+                  {...(busy ? { loading: true } : {})}
+                >
+                  Turn off auto-recharge
+                </s-button>
+              </s-stack>
+            </s-stack>
+          ) : (
+            <s-stack direction="block" gap="base">
+              <s-text type="strong">Buy credits automatically</s-text>
+              <s-text color="subdued">
+                Without this, order confirmations and COD codes stop sending the
+                moment you hit zero — usually at the worst possible time.
+              </s-text>
+
+              <s-grid gridTemplateColumns="repeat(auto-fit, minmax(200px, 1fr))" gap="base">
+                <s-select
+                  label="Buy this package"
+                  value={rechargePackage}
+                  onChange={(event) => setRechargePackage(event.target.value)}
+                >
+                  {CREDIT_PACKAGES.map((entry) => (
+                    <s-option key={entry.id} value={entry.id}>
+                      {`${entry.credits.toLocaleString()} credits — ${usd.format(entry.price)}`}
+                    </s-option>
+                  ))}
+                </s-select>
+
+                <s-number-field
+                  label="Never spend more than"
+                  value={cap}
+                  details="US dollars per month"
+                  onInput={(event) => setCap(event.target.value)}
+                />
+              </s-grid>
+
+              {/* The consent is the whole feature. Shopify will not let an app
+                  charge a one-off without approval, so auto-recharge is a capped
+                  subscription the merchant approves once — and they must be told
+                  exactly that before they click. */}
+              <s-banner tone="info" heading="You approve a monthly limit once">
+                <s-paragraph>
+                  Shopify will ask you to approve a spending limit of{" "}
+                  {usd.format(Number(cap) || 0)} per month. After that we can buy{" "}
+                  {rechargePkg?.credits.toLocaleString()} credits for{" "}
+                  {usd.format(rechargePkg?.price ?? 0)} whenever you run low,
+                  without asking again — and we can never charge you more than that
+                  limit. You can turn it off at any time.
+                </s-paragraph>
+              </s-banner>
+
+              <s-stack direction="inline" gap="base">
+                <s-button
+                  variant="primary"
+                  onClick={() =>
+                    charge("autorecharge-on", { packageId: rechargePackage, cap })
+                  }
+                  {...(busy ? { loading: true } : {})}
+                >
+                  Set up auto-recharge
+                </s-button>
+              </s-stack>
+            </s-stack>
+          )}
         </s-stack>
       </s-section>
     </>
@@ -355,6 +478,58 @@ function SubscriptionView({ data, charge, busy, cancel }) {
           </s-stack>
         </s-section>
       )}
+
+      {active ? (
+        <s-section heading="This month">
+          <s-stack direction="block" gap="base">
+            <s-grid gridTemplateColumns="repeat(auto-fit, minmax(200px, 1fr))" gap="base">
+              <s-box padding="base" borderRadius="base" border="base" background="subdued">
+                <s-stack direction="block" gap="small-200">
+                  <s-text color="subdued">SMS sent on your plan</s-text>
+                  <s-heading>
+                    {data.usage.used.toLocaleString()}
+                    {data.usage.limit === null
+                      ? ""
+                      : ` / ${data.usage.limit.toLocaleString()}`}
+                  </s-heading>
+                  <s-text color="subdued">
+                    {data.usage.limit === null
+                      ? "Unlimited on this plan"
+                      : `${data.usage.remaining.toLocaleString()} left this month`}
+                  </s-text>
+                </s-stack>
+              </s-box>
+
+              <s-box padding="base" borderRadius="base" border="base" background="subdued">
+                <s-stack direction="block" gap="small-200">
+                  <s-text color="subdued">Balance at your provider</s-text>
+                  <s-heading>{data.gatewayBalance ?? "Unknown"}</s-heading>
+                  <s-text color="subdued">
+                    {data.gatewayBalance
+                      ? "As your gateway last reported it."
+                      : "Run Test connection on the gateway page to check it."}
+                  </s-text>
+                </s-stack>
+              </s-box>
+            </s-grid>
+
+            {data.usage.limit !== null && data.usage.remaining === 0 ? (
+              <s-banner tone="critical" heading="You have used your whole plan this month">
+                <s-paragraph>
+                  Messages are no longer being sent, including order confirmations
+                  and COD codes. Upgrade to keep sending.
+                </s-paragraph>
+              </s-banner>
+            ) : null}
+
+            <s-text color="subdued">
+              You send through your own gateway, so these messages are billed by
+              your SMS provider — not by us. Your plan is what you pay us for the
+              app itself.
+            </s-text>
+          </s-stack>
+        </s-section>
+      ) : null}
 
       <s-section heading="Plans">
         <s-stack direction="block" gap="base">

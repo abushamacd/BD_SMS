@@ -1,3 +1,4 @@
+import { runLowBalanceAlert } from "../billing/alert.server.js";
 import { CampaignFailed, runCampaignBatch } from "../campaigns/run.server.js";
 import { runAbandonedFollowUp } from "../checkouts/abandoned.server.js";
 import { expireCodOtp } from "../orders/cod-otp.server.js";
@@ -124,13 +125,28 @@ async function handleAbandonedFollowUp(job) {
   }
 }
 
-// Phases 5-6 register their handlers here. A job type with no handler is buried
-// rather than retried forever.
+/**
+ * LOW_BALANCE — the shop is nearly out of credits.
+ *
+ * Tops them up if auto-recharge is on, warns them if it is not (or if it failed).
+ * Never retried on a billing refusal: retrying a charge Shopify has refused just
+ * gets refused again, and could double-bill if the first attempt actually landed.
+ */
+async function handleLowBalance(job) {
+  const result = await runLowBalanceAlert(job.payload);
+
+  if (result.reason) {
+    console.log(`[low balance ${job.payload.shop}] ${result.reason}`);
+  }
+}
+
+// A job type with no handler is buried rather than retried forever.
 export const HANDLERS = {
   SEND_SMS: handleSendSms,
   SEND_CAMPAIGN: handleSendCampaign,
   ABANDONED_CART_FOLLOWUP: handleAbandonedFollowUp,
   COD_OTP_EXPIRE: handleCodOtpExpire,
+  LOW_BALANCE: handleLowBalance,
 };
 
 export function getHandler(type) {

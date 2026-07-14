@@ -1,4 +1,5 @@
 import db from "../../db.server.js";
+import { reconcileAutoRecharge } from "./autorecharge.server.js";
 import {
   CURRENCY,
   chargeName,
@@ -237,7 +238,12 @@ async function grantCredits(purchase) {
 
   const settings = await db.shopSettings.update({
     where: { shop: purchase.shop },
-    data: { creditBalance: { increment: purchase.credits } },
+    data: {
+      creditBalance: { increment: purchase.credits },
+      // Topped up — re-arm the low-balance warning so it can fire again next time
+      // they run down. Without this we would warn them once, ever.
+      lowBalanceNotifiedAt: null,
+    },
   });
 
   await db.creditLedger.create({
@@ -332,8 +338,20 @@ export async function reconcileBilling(admin, shop) {
     if (await grantCredits(purchase)) granted += purchase.credits;
   }
 
+  // --- Auto-recharge ------------------------------------------------------
+  // Settled FIRST, and separately, because it is also an app subscription — and
+  // if it were mistaken for the merchant's plan, a credit-buying shop that turned
+  // on auto-recharge would appear to be on a paid plan it never bought.
+  await reconcileAutoRecharge(shop, subscriptions);
+
+  const settings = await db.shopSettings.findUnique({ where: { shop } });
+
   // --- Subscription -------------------------------------------------------
-  const active = subscriptions.find((subscription) => subscription.status === "ACTIVE");
+  const active = subscriptions.find(
+    (subscription) =>
+      subscription.status === "ACTIVE" &&
+      subscription.id !== settings?.autoRechargeChargeId,
+  );
 
   if (active) {
     await db.purchase.updateMany({
@@ -349,6 +367,15 @@ export async function reconcileBilling(admin, shop) {
         subscriptionActive: true,
         subscriptionChargeId: active.id,
         subscriptionPlan: plan?.planId ?? null,
+        subscriptionPeriodEnd: active.currentPeriodEnd
+          ? new Date(active.currentPeriodEnd)
+          : null,
+        // A NEW subscription starts a fresh allowance. Without this, a merchant
+        // who subscribes on the 20th would inherit whatever the counter happened
+        // to be sitting at and could find their first month already spent.
+        ...(settings?.subscriptionChargeId === active.id
+          ? {}
+          : { periodUsage: 0, periodStartedAt: new Date() }),
       },
     });
   } else {
