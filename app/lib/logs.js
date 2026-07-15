@@ -13,6 +13,7 @@ export const TYPES = [
   { value: "CAMPAIGN", label: "Campaign" },
   { value: "MANUAL", label: "Manual" },
   { value: "TEST", label: "Test" },
+  { value: "ALERT", label: "Low-balance alert" },
 ];
 
 export const STATUSES = [

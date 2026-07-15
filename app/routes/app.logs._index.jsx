@@ -72,6 +72,18 @@ export default function SmsLog() {
     setParams(next);
   };
 
+  // The "All types" / "All statuses" option has an empty value, and the Polaris
+  // select hands back the option's LABEL for it rather than "". So set the filter
+  // only when the chosen value is a real option; anything else clears it.
+  const setFilter = (key, value, options) => {
+    setParam(key, options.some((option) => option.value === value) ? value : "");
+  };
+
+  // And on the way back out: reflect the URL only if it names a real option, so a
+  // stale or hand-edited ?type=... does not leave the select in a phantom state.
+  const selectValue = (value, options) =>
+    options.some((option) => option.value === value) ? value : "";
+
   const goToPage = (page) => {
     const next = new URLSearchParams(params);
     next.set("page", String(page));
@@ -129,8 +141,8 @@ export default function SmsLog() {
 
             <s-select
               label="Type"
-              value={params.get("type") ?? ""}
-              onChange={(event) => setParam("type", event.target.value)}
+              value={selectValue(params.get("type"), TYPES)}
+              onChange={(event) => setFilter("type", event.target.value, TYPES)}
             >
               <s-option value="">All types</s-option>
               {TYPES.map((type) => (
@@ -142,8 +154,8 @@ export default function SmsLog() {
 
             <s-select
               label="Status"
-              value={params.get("status") ?? ""}
-              onChange={(event) => setParam("status", event.target.value)}
+              value={selectValue(params.get("status"), STATUSES)}
+              onChange={(event) => setFilter("status", event.target.value, STATUSES)}
             >
               <s-option value="">All statuses</s-option>
               {STATUSES.map((status) => (

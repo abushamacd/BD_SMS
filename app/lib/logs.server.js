@@ -1,5 +1,13 @@
 import db from "../db.server.js";
-import { PAGE_SIZE } from "./logs.js";
+import { PAGE_SIZE, STATUSES, TYPES } from "./logs.js";
+
+// The values Prisma will actually accept for these enum columns. Anything else —
+// a stale bookmark, a hand-edited URL, or the label a web-component select can
+// send instead of the value ("All types") — must be ignored, not passed through:
+// Prisma throws a validation error on an unknown enum member and takes the whole
+// page down with it.
+const VALID_TYPES = new Set(TYPES.map((type) => type.value));
+const VALID_STATUSES = new Set(STATUSES.map((status) => status.value));
 
 // Log queries. Shared by the log page and the CSV export, so the rows you see
 // are exactly the rows you export.
@@ -17,8 +25,10 @@ export function buildWhere(shop, params) {
 
   const where = { shop };
 
-  if (type) where.type = type;
-  if (status) where.status = status;
+  // Only a real enum member becomes a filter. An unrecognised value means "no
+  // filter", which is exactly what "All types" should do.
+  if (VALID_TYPES.has(type)) where.type = type;
+  if (VALID_STATUSES.has(status)) where.status = status;
 
   if (from || to) {
     where.createdAt = {};
