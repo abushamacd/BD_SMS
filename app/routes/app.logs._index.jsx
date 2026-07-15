@@ -34,7 +34,10 @@ export const loader = async ({ request }) => {
       type: row.type,
       message: row.body,
       credits: row.credits,
-      charged: row.status === "SENT" || row.status === "DELIVERED",
+      charged:
+        row.status === "SENT" ||
+        row.status === "DELIVERED" ||
+        row.status === "UNDELIVERED",
       status: row.status,
       gateway: row.provider,
       error: row.errorMessage,

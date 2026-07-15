@@ -54,7 +54,9 @@ export async function queryLogs(shop, params, { page = 1, take = PAGE_SIZE } = {
     // was avoided), and a FAILED one was refunded — counting either here would
     // tell the merchant they spent more than they did.
     db.smsLog.aggregate({
-      where: { ...where, status: { in: ["SENT", "DELIVERED"] } },
+      // UNDELIVERED is billed too: the gateway accepted it, so it was charged and
+      // not refunded. Only QUEUED/FAILED/SKIPPED cost nothing.
+      where: { ...where, status: { in: ["SENT", "DELIVERED", "UNDELIVERED"] } },
       _sum: { credits: true },
     }),
     db.smsLog.count({ where: { ...where, status: "FAILED" } }),

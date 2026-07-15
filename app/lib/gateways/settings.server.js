@@ -1,5 +1,6 @@
 import db from "../../db.server.js";
 import { decryptJson, maskSecret } from "../crypto.server.js";
+import { dlrCallbackUrl, getDlrToken } from "../dlr/token.server.js";
 import { assertSafeGatewayUrl } from "./generic.server.js";
 import { buildAdapter, saveGateway } from "./index.server.js";
 import {
@@ -64,6 +65,14 @@ export async function loadGatewaySettings(shop) {
     // e.g. { apiKey: "••••zJ31" } — enough for the merchant to recognise which
     // key is saved, useless to anyone who intercepts it.
     secretHints: hints,
+    // The delivery-report callback URL for this shop + provider, to paste into
+    // the provider's dashboard. Without it the merchant cannot receive DLRs and
+    // every message stays "Sent" forever, whether or not it arrived.
+    dlrCallbackUrl: dlrCallbackUrl(
+      process.env.SHOPIFY_APP_URL ?? "",
+      provider,
+      await getDlrToken(shop),
+    ),
     lastTest: gateway?.lastTestedAt
       ? {
           at: gateway.lastTestedAt.toISOString(),

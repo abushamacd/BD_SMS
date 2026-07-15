@@ -288,6 +288,34 @@ export default function GatewaySettings() {
         </s-section>
       ) : null}
 
+      {isPersonal ? (
+        <s-section heading="Delivery reports">
+          <s-stack direction="block" gap="base">
+            <s-paragraph>
+              Paste this URL into your provider&apos;s delivery-report (DLR)
+              settings. Without it, every message shows as “Sent” forever — even
+              the ones that never reached the customer. With it, the SMS log shows
+              which messages were actually delivered.
+            </s-paragraph>
+
+            <s-text-field
+              label="Your delivery-report URL"
+              value={data.dlrCallbackUrl}
+              details="Copy this into your gateway account. It is unique to your store — keep it private."
+              readOnly
+            />
+
+            <s-banner tone="info" heading="One number is best-effort">
+              <s-paragraph>
+                BulkSMSBD does not return a message ID, so its reports are matched
+                by phone number and can be slightly off when you send the same
+                number two messages at once. Every other provider matches exactly.
+              </s-paragraph>
+            </s-banner>
+          </s-stack>
+        </s-section>
+      ) : null}
+
       <s-section slot="aside" heading="Which should I choose?">
         <s-stack direction="block" gap="base">
           <s-stack direction="block" gap="small-300">

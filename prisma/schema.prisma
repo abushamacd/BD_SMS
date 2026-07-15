@@ -95,6 +95,13 @@ model ShopSettings {
   senderId    String?
   countryCode String  @default("+880")
 
+  // The secret in this shop's delivery-report callback URL
+  // (/dlr/<provider>/<dlrToken>). A DLR endpoint is public and unauthenticated,
+  // so this opaque token is the ONLY thing that ties a callback to a shop and
+  // stops a stranger marking another shop's messages delivered or failed.
+  // Generated on first use, rotatable.
+  dlrToken String? @unique
+
   // Held messages are sent when quiet hours end. OTP is always exempt: a
   // customer waiting at checkout at 11pm cannot wait until 8am for their code.
   quietHoursEnabled Boolean @default(false)
@@ -352,8 +359,14 @@ enum SmsType {
 
 enum SmsStatus {
   QUEUED
-  SENT // accepted by the gateway
-  DELIVERED // confirmed by the DLR callback
+  SENT // accepted by the gateway; a delivery report has not arrived yet
+  DELIVERED // the DLR callback confirmed it reached the handset
+  // The gateway accepted it (so we were charged and DID charge the merchant), but
+  // the carrier's DLR later said it never arrived. Distinct from FAILED: this
+  // message WAS billed — no refund, because the operator billed us — so it must
+  // stay in the credit totals. FAILED is a message the gateway REJECTED before
+  // delivery, which we refunded.
+  UNDELIVERED
   FAILED
   SKIPPED // blacklisted, no consent, or invalid number — never sent, never billed
 }

@@ -19,6 +19,7 @@ export const STATUSES = [
   { value: "QUEUED", label: "Queued" },
   { value: "SENT", label: "Sent" },
   { value: "DELIVERED", label: "Delivered" },
+  { value: "UNDELIVERED", label: "Not delivered" },
   { value: "FAILED", label: "Failed" },
   { value: "SKIPPED", label: "Skipped" },
 ];
@@ -27,6 +28,8 @@ export const STATUS_TONE = {
   QUEUED: "neutral",
   SENT: "info",
   DELIVERED: "success",
+  // Charged but never arrived — a warning, not a hard error like a rejected send.
+  UNDELIVERED: "warning",
   FAILED: "critical",
   SKIPPED: "warning",
 };
