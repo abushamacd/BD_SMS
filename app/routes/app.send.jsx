@@ -62,7 +62,9 @@ async function customerTags(admin) {
     `);
     const body = await response.json();
 
-    return (body?.data?.shop?.customerTags?.edges ?? []).map((edge) => edge.node);
+    return (body?.data?.shop?.customerTags?.edges ?? []).map(
+      (edge) => edge.node,
+    );
   } catch {
     return [];
   }
@@ -88,7 +90,12 @@ export const action = async ({ request }) => {
     throw error;
   }
 
-  const result = await sendManual({ shop, recipients, message, consentOverride });
+  const result = await sendManual({
+    shop,
+    recipients,
+    message,
+    consentOverride,
+  });
 
   if (!result.ok) return { ok: false, message: result.reason };
 
@@ -119,7 +126,9 @@ async function resolveRecipients(admin, form) {
     }));
   }
 
-  const ids = String(form.get("customerIds") ?? "").split(",").filter(Boolean);
+  const ids = String(form.get("customerIds") ?? "")
+    .split(",")
+    .filter(Boolean);
   const customers = await fetchCustomersByIds(admin, ids);
 
   return customers.map((customer) => ({
@@ -204,12 +213,18 @@ export default function SendSms() {
 
   const needsAcknowledgement = noConsentCount > 0;
 
+  // const canSend =
+  //   recipientCount > 0 &&
+  //   message.trim().length > 0 &&
+  //   !insufficient &&
+  //   !tooMany &&
+  //   (!needsAcknowledgement || acknowledged);
+
   const canSend =
     recipientCount > 0 &&
     message.trim().length > 0 &&
     !insufficient &&
-    !tooMany &&
-    (!needsAcknowledgement || acknowledged);
+    !tooMany;
 
   const allSelected =
     data.customers.length > 0 &&
@@ -369,8 +384,8 @@ export default function SendSms() {
               {data.truncated ? (
                 <s-banner tone="info" heading="Showing the first 100 matches">
                   <s-paragraph>
-                    Narrow the search, or use a campaign — it sends to everyone who
-                    matches, not just the ones on screen.
+                    Narrow the search, or use a campaign — it sends to everyone
+                    who matches, not just the ones on screen.
                   </s-paragraph>
                   <s-button slot="primary-action" href="/app/campaigns/new">
                     Create a campaign
@@ -379,14 +394,18 @@ export default function SendSms() {
               ) : null}
 
               {noConsentCount > 0 ? (
-                <s-banner tone="warning" heading="Customers without SMS consent">
+                <s-banner
+                  tone="warning"
+                  heading="Customers without SMS consent"
+                >
                   <s-paragraph>
                     {noConsentCount}{" "}
-                    {noConsentCount === 1 ? "customer has" : "customers have"} not
-                    agreed to receive SMS marketing. Sending marketing messages to
-                    them can get your sender ID blocked and breaches Shopify&apos;s
-                    requirements. Unless you confirm you have permission, they are
-                    skipped and the reason is recorded in the log.
+                    {noConsentCount === 1 ? "customer has" : "customers have"}{" "}
+                    not agreed to receive SMS marketing. Sending marketing
+                    messages to them can get your sender ID blocked and breaches
+                    Shopify&apos;s requirements. Unless you confirm you have
+                    permission, they are skipped and the reason is recorded in
+                    the log.
                   </s-paragraph>
                 </s-banner>
               ) : null}
@@ -431,7 +450,9 @@ export default function SendSms() {
                           {customer.tags.join(", ") || "—"}
                         </s-table-cell>
                         <s-table-cell>
-                          <s-badge tone={customer.smsConsent ? "success" : "neutral"}>
+                          <s-badge
+                            tone={customer.smsConsent ? "success" : "neutral"}
+                          >
                             {customer.smsConsent ? "Opted in" : "No consent"}
                           </s-badge>
                         </s-table-cell>
@@ -455,7 +476,9 @@ export default function SendSms() {
               {phoneText.trim() ? (
                 <s-stack direction="block" gap="small">
                   <s-stack direction="inline" gap="small" alignItems="center">
-                    <s-badge tone="success">{parsed.valid.length} valid</s-badge>
+                    <s-badge tone="success">
+                      {parsed.valid.length} valid
+                    </s-badge>
                     {parsed.invalid.length > 0 ? (
                       <s-badge tone="critical">
                         {parsed.invalid.length} invalid
@@ -470,7 +493,10 @@ export default function SendSms() {
                   </s-stack>
 
                   {parsed.invalid.length > 0 ? (
-                    <s-banner tone="warning" heading="Some numbers cannot be sent to">
+                    <s-banner
+                      tone="warning"
+                      heading="Some numbers cannot be sent to"
+                    >
                       <s-unordered-list>
                         {parsed.invalid.slice(0, 5).map((entry, index) => (
                           <s-list-item key={`${entry.input}-${index}`}>
@@ -484,8 +510,8 @@ export default function SendSms() {
                         </s-paragraph>
                       ) : null}
                       <s-paragraph>
-                        These are skipped. Invalid numbers still cost a credit if
-                        the gateway is asked to deliver them.
+                        These are skipped. Invalid numbers still cost a credit
+                        if the gateway is asked to deliver them.
                       </s-paragraph>
                     </s-banner>
                   ) : null}
@@ -527,7 +553,8 @@ export default function SendSms() {
             <s-text color="subdued">Total cost</s-text>
             <s-heading>{totalCredits.toLocaleString()} credits</s-heading>
             <s-text color="subdued">
-              {creditsEach} {creditsEach === 1 ? "credit" : "credits"} per recipient
+              {creditsEach} {creditsEach === 1 ? "credit" : "credits"} per
+              recipient
             </s-text>
           </s-stack>
 
@@ -545,7 +572,9 @@ export default function SendSms() {
                 <s-heading>
                   {(data.balance - totalCredits).toLocaleString()}
                 </s-heading>
-                {insufficient ? <s-badge tone="critical">Not enough</s-badge> : null}
+                {insufficient ? (
+                  <s-badge tone="critical">Not enough</s-badge>
+                ) : null}
               </s-stack>
               <s-text color="subdued">
                 You have {data.balance.toLocaleString()} credits
@@ -557,8 +586,8 @@ export default function SendSms() {
             <s-banner tone="critical" heading="Too many recipients">
               <s-paragraph>
                 You can send to {MAX_RECIPIENTS} people at once from here. For a
-                bigger send, create a campaign — it gives you progress, pause and
-                resume.
+                bigger send, create a campaign — it gives you progress, pause
+                and resume.
               </s-paragraph>
               <s-button slot="primary-action" href="/app/campaigns/new">
                 Create a campaign
@@ -583,8 +612,10 @@ export default function SendSms() {
               {recipientCount === 1 ? "recipient" : "recipients"}
             </s-text>{" "}
             for{" "}
-            <s-text type="strong">{totalCredits.toLocaleString()} credits</s-text>.
-            This cannot be undone.
+            <s-text type="strong">
+              {totalCredits.toLocaleString()} credits
+            </s-text>
+            . This cannot be undone.
           </s-paragraph>
 
           <s-box padding="base" background="subdued" borderRadius="base">
