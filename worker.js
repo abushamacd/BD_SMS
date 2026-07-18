@@ -10,6 +10,7 @@
 import { createWorker } from "./app/lib/queue/worker.server.js";
 
 const worker = createWorker();
+console.log("Worker process started. Waiting for jobs…");
 
 // Finish what is in flight before exiting, so a deploy does not abandon
 // half-sent campaigns.
