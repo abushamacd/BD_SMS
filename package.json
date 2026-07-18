@@ -4,6 +4,7 @@
   "scripts": {
     "build": "react-router build",
     "dev": "shopify app dev",
+    "dev:all": "concurrently -k -n dev,worker -c cyan,magenta \"shopify app dev\" \"npm:worker\"",
     "config:link": "shopify app config link",
     "generate": "shopify app generate",
     "deploy": "shopify app deploy",
@@ -49,6 +50,7 @@
     "@types/react-dom": "^18.3.7",
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
+    "concurrently": "^10.0.3",
     "eslint": "^8.57.1",
     "eslint-import-resolver-typescript": "^3.10.1",
     "eslint-plugin-import": "^2.32.0",
