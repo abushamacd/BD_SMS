@@ -1,6 +1,6 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "a790eb37d80988db57454ec0af0b4efe"
+client_id = "23dbdb4d3d199ef3f6ab4991dca62f64"
 name = "BD SMS"
 application_url = "https://example.com"
 embedded = true
@@ -92,3 +92,4 @@ redirect_urls = [ "https://example.com/api/auth" ]
 [build]
 include_config_on_deploy = true
 automatically_update_urls_on_dev = true
+
